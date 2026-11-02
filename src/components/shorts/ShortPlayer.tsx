@@ -138,7 +138,7 @@ export function ShortPlayer({
           layout={active}
           className="short-frame flex flex-row overflow-hidden rounded-2xl bg-chrome-black ring-1 ring-chrome-white/10"
         >
-          <div className="relative z-20 aspect-[9/16] h-full bg-chrome-black">
+          <div className="short-video-box relative z-20 h-full bg-chrome-black">
             <ShortVideoSurface
               videoId={short.id}
               dashUrl={active ? dashUrl : null}

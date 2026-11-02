@@ -9,7 +9,7 @@ import { SETTINGS } from "../settings/schema";
  * default (off) never collapses tabs that were just restored.
  */
 export function useSingleTabWhenOff(): void {
-  const tabsOff = useAppSettingsStore((state) => state.loaded && state.values[SETTINGS.TABS_ENABLED] !== "true");
+  const tabsOff = useAppSettingsStore((state) => state.loaded && state.values[SETTINGS.TABS_ENABLED] === "false");
   useEffect(() => {
     if (!tabsOff) return;
     const { tabs, activeId, keepOnlyTab } = useTabsStore.getState();

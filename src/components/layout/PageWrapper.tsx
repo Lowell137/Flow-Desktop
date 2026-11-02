@@ -3,11 +3,16 @@ import { getString } from '../../lib/i18n/index';
 import { Topbar } from './Topbar';
 import { Sidebar } from './Sidebar';
 import { NavigationType, Outlet, useLocation, useNavigationType } from 'react-router-dom';
+import { SETTINGS } from '../../lib/settings/schema';
+import { useAppSettingsStore } from '../../store/useAppSettingsStore';
+import { usePlayerStore } from '../../store/usePlayerStore';
 import { useUiStore } from '../../store/useUiStore';
 import { ScrollContainerContext } from '../../lib/useScrollContainer';
 import { usePageEnterMotion } from '../../lib/usePageEnterMotion';
 import { SIDEBAR_MENU_BUTTON_ID } from './Topbar';
 import { recalledScroll, rememberScroll, restoreScroll } from '../../lib/tabs/scrollMemory';
+
+const SIDEBAR_HOVER_CLOSE_MS = 60;
 
 export function PageWrapper() {
   const location = useLocation();
@@ -17,6 +22,8 @@ export function PageWrapper() {
   // every mounted card included — on each keystroke in the search box.
   const isWatchSidebarOpen = useUiStore((s) => s.isWatchSidebarOpen);
   const setWatchSidebarOpen = useUiStore((s) => s.setWatchSidebarOpen);
+  const hoverOpenEnabled = useAppSettingsStore((s) => s.values[SETTINGS.SIDEBAR_HOVER_OPEN] !== 'false');
+  const isVideoFullscreen = usePlayerStore((s) => s.isVideoFullscreen);
   const isWatchPage = location.pathname.startsWith('/watch/');
   const isSettingsPage = location.pathname.startsWith('/settings');
   const isPlaylistDetailsPage =
@@ -70,9 +77,30 @@ export function PageWrapper() {
   }, [location.pathname, setWatchSidebarOpen]);
 
   const drawerRef = useRef<HTMLDivElement>(null);
+  // Set while the pointer opened the drawer: it closes when the pointer leaves, and
+  // keyboard focus stays on the player, so its shortcuts keep working.
+  const openedByHoverRef = useRef(false);
+  const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const openOnHover = () => {
+    clearTimeout(hoverTimerRef.current);
+    openedByHoverRef.current = true;
+    setWatchSidebarOpen(true);
+  };
+  // The flag stays up through this close so it animates as fast as the open; the effect below clears it.
+  const closeAfterHover = () => {
+    clearTimeout(hoverTimerRef.current);
+    hoverTimerRef.current = setTimeout(() => setWatchSidebarOpen(false), SIDEBAR_HOVER_CLOSE_MS);
+  };
+  const cancelHover = () => clearTimeout(hoverTimerRef.current);
+  useEffect(() => cancelHover, []);
   useEffect(() => {
-    if (!isWatchSidebarOpen) return;
-    drawerRef.current?.querySelector<HTMLElement>('a, button')?.focus({ preventScroll: true });
+    if (!isWatchSidebarOpen) {
+      openedByHoverRef.current = false;
+      return;
+    }
+    if (!openedByHoverRef.current) {
+      drawerRef.current?.querySelector<HTMLElement>('a, button')?.focus({ preventScroll: true });
+    }
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' || document.fullscreenElement) return;
       setWatchSidebarOpen(false);
@@ -107,9 +135,19 @@ export function PageWrapper() {
           </ScrollContainerContext.Provider>
         </main>
       </div>
+      {(isWatchPage || isSettingsPage) && hoverOpenEnabled && !isVideoFullscreen && !isWatchSidebarOpen && (
+        <div
+          aria-hidden="true"
+          className="fixed bottom-0 left-0 top-[calc(var(--app-titlebar-height)+3.5rem)] z-50 w-4"
+          onMouseEnter={openOnHover}
+          // The pointer can already be here when the drawer closes, with no new enter to fire.
+          onMouseMove={openOnHover}
+        />
+      )}
       {(isWatchPage || isSettingsPage) && (
         <div
           data-open={isWatchSidebarOpen}
+          data-hover={openedByHoverRef.current}
           inert={!isWatchSidebarOpen}
           className={`fixed inset-x-0 bottom-0 top-[calc(var(--app-titlebar-height)+3.5rem)] z-50 flex ${
             isWatchSidebarOpen ? '' : 'pointer-events-none'
@@ -122,7 +160,14 @@ export function PageWrapper() {
             className="sidebar-scrim absolute inset-0 bg-chrome-black/60"
             onClick={() => setWatchSidebarOpen(false)}
           />
-          <div ref={drawerRef} className="sidebar-drawer relative h-full">
+          <div
+            ref={drawerRef}
+            className="sidebar-drawer relative h-full"
+            onMouseEnter={cancelHover}
+            onMouseLeave={() => {
+              if (openedByHoverRef.current) closeAfterHover();
+            }}
+          >
             <Sidebar mode="overlay" />
           </div>
         </div>

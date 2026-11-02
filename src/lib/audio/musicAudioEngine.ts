@@ -539,7 +539,8 @@ class MusicAudioEngine {
    * already playing when the equalizer or crossfade comes on must be heard through it.
    */
   wantsAac(): boolean {
-    return IS_MACOS_RUNTIME;
+    // On Linux, WebKit took about 7 seconds to start Opus and about 1 to start AAC.
+    return IS_MACOS_RUNTIME || IS_LINUX_RUNTIME;
   }
 
   /** False once WebAudio failed here, so the equalizer cannot be heard. */

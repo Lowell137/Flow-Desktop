@@ -17,6 +17,8 @@ import { useMusicDiscoverySections } from '../../lib/useMusicDiscoverySections';
 import { useMusicMoreSections } from '../../lib/useMusicMoreSections';
 import { useMusicCharts } from '../../lib/useMusicCharts';
 import { useMusicMoods } from '../../lib/useMusicMoods';
+import { readAccountCache, writeAccountCache } from '../../lib/accountCache';
+import { getAccountMusic, isSignedIn } from '../../lib/api/account';
 import { composeMusicFeed, type MusicFeedSection } from '../../lib/musicFeedComposer';
 import { musicSeeAllRoute } from '../../lib/musicRoutes';
 import { shuffled } from '../../lib/musicRecall';
@@ -62,6 +64,20 @@ export default function MusicHome() {
   const moreSections = useMusicMoreSections(data?.chips ?? NO_CHIPS, moods.groups);
   const isHidden = useMusicHiddenFilter();
   const isArtistHidden = useMusicArtistHidden();
+  const [accountPlaylists, setAccountPlaylists] = useState<YTItem[]>(() => readAccountCache<YTItem[]>('playlists') ?? []);
+  useEffect(() => {
+    void isSignedIn().then(async (signedIn) => {
+      if (!signedIn) return;
+      const { playlists } = await getAccountMusic('playlists');
+      // Liked Music opens the list first, whether or not YouTube's library page includes it.
+      const liked = playlists.find((playlist) => playlist.id === 'LM')
+        ?? { id: 'LM', title: getString('liked_music'), author: null, songCountText: null, thumbnail: null };
+      const items = [liked, ...playlists.filter((playlist) => playlist.id !== 'LM')]
+        .map((playlist) => ({ ...playlist, type: 'playlist' as const }));
+      setAccountPlaylists(items);
+      writeAccountCache('playlists', items);
+    }).catch((error) => console.warn('Failed to load the account playlists', error));
+  }, []);
   // Drop blocked/dismissed songs and blocked-artist cards from every shelf.
   const visible = (items: YTItem[]): YTItem[] =>
     items.filter((it) =>
@@ -254,6 +270,14 @@ export default function MusicHome() {
     const quickTitle = getString('music_quick_picks');
     return (
       <div className="flex flex-col gap-10">
+        {accountPlaylists.length > 0 && (
+          <MusicShelf
+            title={getString('library_playlists_label')}
+            items={accountPlaylists}
+            skeletonShape="square"
+            renderItem={(item) => renderCard(item, [], getString('library_playlists_label'))}
+          />
+        )}
         {feed.map((entry) => {
           if (entry.kind === 'quickPicks') {
             return (

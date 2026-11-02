@@ -3,6 +3,7 @@ import {
   pickAdaptiveVideoUrl,
   pickAudioUrl,
   pickDirectUrl,
+  pickDashRepresentationId,
   selectShortPlaybackSource,
 } from "./useShortStream";
 import { codecRank } from "./codecPreference";
@@ -155,5 +156,26 @@ describe("selectShortPlaybackSource", () => {
       videoUrl: "muxed",
       audioUrl: null,
     });
+  });
+
+  it("starts a DASH Short at the tallest rendition under the chosen quality", () => {
+    const portrait = [
+      { id: "low", width: 144, height: 256 },
+      { id: "mid", width: 720, height: 1280 },
+      { id: "top", width: 1080, height: 1920 },
+    ];
+    expect(pickDashRepresentationId(portrait, "720p")).toBe("mid");
+    expect(pickDashRepresentationId(portrait, "auto")).toBe("top");
+    expect(pickDashRepresentationId(portrait, "100p")).toBe("low");
+    expect(pickDashRepresentationId([], "720p")).toBeNull();
+  });
+
+  it("plays a SABR-only answer through its manifest", () => {
+    const info = makeInfo({
+      dashManifestUrl: null,
+      variants: [],
+      sabr: { available: true, manifestUrl: "sabr", requiresPoToken: true },
+    });
+    expect(selectShortPlaybackSource(info)).toEqual({ dashUrl: "sabr", videoUrl: null, audioUrl: null });
   });
 });

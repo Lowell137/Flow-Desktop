@@ -5,7 +5,7 @@ import type { MusicStreamInfo } from "../types/music";
 const { getMusicStream } = vi.hoisted(() => ({ getMusicStream: vi.fn() }));
 vi.mock("./api/music", () => ({ getMusicStream }));
 
-import { invalidateMusicStream, isResolveTimeout, resolveMusicStream } from "./musicStreamResolution";
+import { invalidateMusicStream, isResolveTimeout, prefetchMusicStream, resolveMusicStream } from "./musicStreamResolution";
 
 const info = (url: string) => ({ videoId: "v", audioUrl: url }) as MusicStreamInfo;
 
@@ -15,6 +15,16 @@ afterEach(() => {
 });
 
 describe("music stream resolution", () => {
+  it("does not warm a refused track again and again", async () => {
+    getMusicStream.mockRejectedValue({ kind: "ageRestricted" });
+    prefetchMusicStream("refused", "Auto");
+    await vi.waitFor(() => expect(getMusicStream).toHaveBeenCalledTimes(1));
+    await new Promise((resolve) => setTimeout(resolve));
+    prefetchMusicStream("refused", "Auto");
+    await new Promise((resolve) => setTimeout(resolve));
+    expect(getMusicStream).toHaveBeenCalledTimes(1);
+  });
+
   it("gives up on a lookup that never answers", async () => {
     vi.useFakeTimers();
     getMusicStream.mockReturnValue(new Promise(() => {}));

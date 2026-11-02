@@ -2,6 +2,7 @@
 
 use serde_json::Value;
 
+use crate::api::innertube::core::account;
 use crate::api::innertube::core::clients::YouTubeClient;
 
 /// Which `InnerTube` origin a request goes to.
@@ -74,6 +75,15 @@ impl RequestSpec<'_> {
         ];
         if let Some(visitor) = visitor.filter(|value| !value.is_empty()) {
             headers.push(("X-Goog-Visitor-Id", visitor.to_string()));
+        }
+        // Only the web clients accept account cookies.
+        if (self.client.is_web_sabr() || self.client.name == "WEB_REMIX")
+            && let Some(session) = account::session()
+        {
+            headers.retain(|(name, _)| *name != "Cookie");
+            headers.push(("Cookie", format!("SOCS=CAE=; {}", session.cookie_header())));
+            headers.push(("Authorization", session.authorization(origin)));
+            headers.push(("X-Goog-AuthUser", "0".to_string()));
         }
         headers
     }

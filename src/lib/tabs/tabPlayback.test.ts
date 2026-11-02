@@ -137,4 +137,14 @@ describe("tab playback", () => {
     await flush();
     expect(expandPlayerInOwnerTab()).toBe(false);
   });
+
+  it("hands a never-played background tab to the player paused", () => {
+    tabs().push("/");
+    useTabsStore.setState((state) => ({
+      tabs: state.tabs.map((tab) => (tab.id === "b" ? { ...tab, entries: [createEntry("/watch/v1")], index: 0 } : tab)),
+    }));
+    tabs().park("b", { videoId: "v1", positionSeconds: 0, queue: [video("v1")], currentIndex: 0, playlistContext: null, paused: true });
+    switchToTab("b");
+    expect(usePlayerStore.getState().pipHandoff).toEqual({ videoId: "v1", positionSeconds: 0, playing: false });
+  });
 });

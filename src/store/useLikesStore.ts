@@ -1,5 +1,7 @@
 import { create } from "zustand";
 import { getSetting, setSetting } from "../lib/api/db";
+import { readAccountCache, writeAccountCache } from "../lib/accountCache";
+import { getAccountFeed, getAccountMusic, isSignedIn, setAccountLike } from "../lib/api/account";
 import { getMusicQueue } from "../lib/api/music";
 import type { SongItem } from "../types/music";
 import type { VideoSummary } from "../types/video";
@@ -68,6 +70,35 @@ export const useLikesStore = create<LikesState>((set, get) => ({
   load: async () => {
     if (get().loaded) return;
     try {
+      if (await isSignedIn()) {
+        const saved = readAccountCache<LikedItem[]>("likes");
+        if (saved) set({ items: normalizeItems(saved), loaded: true });
+        const likedAt = new Date().toISOString();
+        const items: LikedItem[] = [];
+        let continuation: string | null = null;
+        // shortcut: reads the newest 10 pages of likes, a like past them shows as not liked.
+        for (let page = 0; page < 10; page++) {
+          const feed: Awaited<ReturnType<typeof getAccountFeed>> = await getAccountFeed("liked", continuation);
+          for (const video of feed.videos) items.push({ kind: "video", id: video.id, likedAt, video });
+          continuation = feed.continuation;
+          if (!continuation) break;
+        }
+        continuation = null;
+        // Separate from the videos above: one list failing must not empty the other.
+        try {
+          for (let page = 0; page < 10; page++) {
+            const music: Awaited<ReturnType<typeof getAccountMusic>> = await getAccountMusic("songs", continuation);
+            for (const song of music.songs) items.push({ kind: "music", id: songId(song), likedAt, song });
+            continuation = music.continuation;
+            if (!continuation) break;
+          }
+        } catch (error) {
+          console.warn("Failed to load liked songs", error);
+        }
+        set({ items: normalizeItems(items), loaded: true });
+        writeAccountCache("likes", items);
+        return;
+      }
       const raw = await getSetting(LIKES_SETTING_KEY);
       const parsed = raw ? (JSON.parse(raw) as LikedItem[]) : [];
       set({ items: normalizeItems(Array.isArray(parsed) ? parsed : []), loaded: true });
@@ -132,6 +163,7 @@ export const useLikesStore = create<LikesState>((set, get) => ({
     await get().load();
     const key = itemKey("video", video.id);
     const exists = get().items.some((item) => itemKey(item.kind, item.id) === key);
+    if (await isSignedIn()) await setAccountLike(video.id, !exists);
     const next = exists
       ? get().items.filter((item) => itemKey(item.kind, item.id) !== key)
       : [
@@ -153,6 +185,7 @@ export const useLikesStore = create<LikesState>((set, get) => ({
     const id = songId(song);
     const key = itemKey("music", id);
     const exists = get().items.some((item) => itemKey(item.kind, item.id) === key);
+    if (await isSignedIn()) await setAccountLike(id, !exists);
     const next = exists
       ? get().items.filter((item) => itemKey(item.kind, item.id) !== key)
       : [
@@ -171,6 +204,7 @@ export const useLikesStore = create<LikesState>((set, get) => ({
 
   remove: async (kind, id) => {
     await get().load();
+    if (await isSignedIn()) await setAccountLike(id, false);
     const key = itemKey(kind, id);
     const next = get().items.filter((item) => itemKey(item.kind, item.id) !== key);
     set({ items: normalizeItems(next) });
@@ -178,6 +212,7 @@ export const useLikesStore = create<LikesState>((set, get) => ({
   },
 
   clear: async () => {
+    if (await isSignedIn()) return;
     set({ items: [] });
     await persist([]);
   },

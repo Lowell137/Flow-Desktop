@@ -9,7 +9,8 @@ use std::sync::OnceLock;
 use mp4_atom::{Decode, FourCC, Header, Sidx};
 
 /// Set to `false` to serve AAC as a plain file again, should `WebAudio` not hear it as HLS.
-pub const SERVE_AAC_AS_HLS: bool = true;
+// WebKitGTK refuses these playlists with a decode error, while the same file plays as a plain file.
+pub const SERVE_AAC_AS_HLS: bool = !cfg!(target_os = "linux");
 
 /// Enough of the file to hold `ftyp`, `moov` and `sidx`, which come first.
 const HEAD_BYTES: usize = 32 * 1024;

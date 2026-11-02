@@ -1,5 +1,6 @@
 import { create } from "zustand";
 
+import { getAccountFeed, isSignedIn, type AccountFeed } from "../lib/api/account";
 import { clearWatchHistory, deleteWatchRecord, getWatchHistory } from "../lib/api/db";
 import type { WatchHistoryRecord } from "../types/db";
 
@@ -21,6 +22,22 @@ interface HistoryState {
 }
 
 let inFlight = false;
+let accountContinuation: string | null = null;
+
+// YouTube's history page gives no watch time per video.
+function accountRecords(feed: AccountFeed): WatchHistoryRecord[] {
+  accountContinuation = feed.continuation;
+  const watchDate = new Date().toISOString();
+  return feed.videos.map((video) => ({
+    videoId: video.id,
+    title: video.title,
+    channelName: video.channelName,
+    channelId: video.channelId,
+    watchDate,
+    watchDurationSeconds: 0,
+    totalDurationSeconds: video.durationSeconds,
+  }));
+}
 
 export const useHistoryStore = create<HistoryState>((set, get) => ({
   records: [],
@@ -35,6 +52,11 @@ export const useHistoryStore = create<HistoryState>((set, get) => ({
     inFlight = true;
     set({ loading: true });
     try {
+      if (await isSignedIn()) {
+        const records = accountRecords(await getAccountFeed("history"));
+        set({ records, offset: records.length, hasMore: accountContinuation !== null, loaded: true });
+        return;
+      }
       const records = await getWatchHistory(HISTORY_PAGE_SIZE, 0);
       set({
         records,
@@ -54,14 +76,17 @@ export const useHistoryStore = create<HistoryState>((set, get) => ({
     inFlight = true;
     set({ loadingMore: true });
     try {
-      const records = await getWatchHistory(HISTORY_PAGE_SIZE, get().offset);
+      const signedIn = await isSignedIn();
+      const records = signedIn
+        ? accountRecords(await getAccountFeed("history", accountContinuation))
+        : await getWatchHistory(HISTORY_PAGE_SIZE, get().offset);
       set((state) => {
         const seen = new Set(state.records.map((r) => r.videoId));
         const fresh = records.filter((r) => !seen.has(r.videoId));
         return {
           records: fresh.length > 0 ? [...state.records, ...fresh] : state.records,
           offset: state.offset + records.length,
-          hasMore: records.length === HISTORY_PAGE_SIZE,
+          hasMore: signedIn ? accountContinuation !== null : records.length === HISTORY_PAGE_SIZE,
         };
       });
     } catch (error) {
@@ -72,6 +97,8 @@ export const useHistoryStore = create<HistoryState>((set, get) => ({
     }
   },
   remove: async (videoId) => {
+    // shortcut: removing from the account's history isn't wired, add it with `feedback` tokens.
+    if (await isSignedIn()) return;
     await deleteWatchRecord(videoId);
     set((state) => ({
       records: state.records.filter((item) => item.videoId !== videoId),
@@ -79,6 +106,7 @@ export const useHistoryStore = create<HistoryState>((set, get) => ({
     }));
   },
   clear: async () => {
+    if (await isSignedIn()) return;
     await clearWatchHistory();
     set({ records: [], offset: 0, hasMore: false });
   },

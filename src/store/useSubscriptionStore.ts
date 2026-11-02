@@ -1,4 +1,6 @@
 import { create } from "zustand";
+import { readAccountCache, writeAccountCache } from "../lib/accountCache";
+import { getAccountChannels, isSignedIn, setAccountSubscribed } from "../lib/api/account";
 import { getSetting, setSetting } from "../lib/api/db";
 import { noteSubscription } from "../lib/api/recommendation";
 
@@ -128,6 +130,20 @@ export const useSubscriptionStore = create<SubscriptionState>((set, get) => ({
   loadSubscriptions: async () => {
     set({ loading: true });
     try {
+      if (await isSignedIn()) {
+        const saved = readAccountCache<SubscribedChannel[]>("channels");
+        if (saved) set({ subscriptions: saved, loading: false });
+        const channels = await getAccountChannels();
+        const subscriptions = channels.map((channel) => ({
+          id: channel.id,
+          name: channel.name,
+          avatarUrl: channel.avatarUrl ?? undefined,
+          subscribedAt: Date.now(),
+        }));
+        set({ subscriptions, loading: false });
+        writeAccountCache("channels", subscriptions);
+        return;
+      }
       const subsJson = await getSetting(SUBSCRIPTIONS_KEY);
       const parsed: SubscribedChannel[] = subsJson ? JSON.parse(subsJson) : [];
       const cleaned = parsed.filter((channel) => !LEGACY_SEED_IDS.has(channel.id));
@@ -153,6 +169,7 @@ export const useSubscriptionStore = create<SubscriptionState>((set, get) => ({
     const { subscriptions } = get();
     const cleanId = cleanChannelId(channelId);
     const existing = subscriptions.find((c) => c.id === cleanId);
+    if (!existing && (await isSignedIn())) await setAccountSubscribed(cleanId, true);
     await clearTombstone(cleanId);
     if (existing) {
       if (avatarUrl && !existing.avatarUrl) {
@@ -175,6 +192,7 @@ export const useSubscriptionStore = create<SubscriptionState>((set, get) => ({
     const { subscriptions, subscriptionGroups } = get();
     const cleanId = cleanChannelId(channelId);
     const removed = subscriptions.find((c) => c.id === cleanId) ?? null;
+    if (await isSignedIn()) await setAccountSubscribed(cleanId, false);
     const groupNames = subscriptionGroups.filter((group) => group.channelIds.includes(cleanId)).map((group) => group.name);
     const channelName = removed?.name ?? "";
     const updated = subscriptions.filter((c) => c.id !== cleanId);

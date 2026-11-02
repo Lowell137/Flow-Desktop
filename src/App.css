@@ -454,6 +454,20 @@
   transition: transform var(--sidebar-motion-duration) var(--sidebar-motion-ease), visibility 0s;
 }
 
+[data-open="true"][data-hover="true"] > .sidebar-drawer {
+  transition-duration: 100ms, 0s;
+}
+
+/* A drawer the pointer called has to be there at once, with no full-window dimming to composite. */
+[data-hover="true"] > .sidebar-drawer {
+  transition-duration: 100ms, 0s;
+}
+
+[data-hover="true"] > .sidebar-scrim {
+  opacity: 0 !important;
+  transition: none;
+}
+
 .sidebar-scrim {
   opacity: 0;
   transition: opacity 300ms linear;
@@ -728,11 +742,18 @@
 }
 
 .short-frame {
-  height: clamp(
-    min(100%, 360px),
+  --short-height: clamp(
+    min(100cqh, 360px),
     calc((100cqw - var(--short-sides) - var(--short-panel, 0px)) * 16 / 9),
-    100%
+    100cqh
   );
+  height: var(--short-height);
+}
+
+/* Sized from the height, so a video's native width never reaches the card. */
+.short-video-box {
+  width: calc(var(--short-height) * 9 / 16);
+  flex-shrink: 0;
 }
 
 #flow-player-root[data-fullscreen="true"] {

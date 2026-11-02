@@ -170,19 +170,37 @@ export function pickAudioUrl(info: StreamInfo): string | null {
 export function selectShortPlaybackSource(info: StreamInfo, qualityIdOrLabel = "720p"): ShortPlaybackSource {
   const adaptiveVideo = pickAdaptiveVideoVariant(info, qualityIdOrLabel);
   const audioUrl = pickAudioUrl(info);
+  // A signed-in web client answers with SABR only, so its manifest is the one source.
+  const dashUrl = info.dashManifestUrl ?? (info.sabr?.available ? info.sabr.manifestUrl ?? null : null);
   if (adaptiveVideo) {
     return {
-      dashUrl: info.dashManifestUrl ?? null,
+      dashUrl,
       videoUrl: adaptiveVideo.localUrl,
       audioUrl,
     };
   }
 
   return {
-    dashUrl: info.dashManifestUrl ?? null,
+    dashUrl,
     videoUrl: pickDirectVariant(info, qualityIdOrLabel)?.localUrl ?? pickDirectUrl(info),
     audioUrl: null,
   };
+}
+
+/**
+ * The rendition to start a DASH Short on: the tallest at or under the chosen quality. dash.js would
+ * otherwise start at its lowest. A portrait video's short side is its quality, so that is compared.
+ */
+export function pickDashRepresentationId(
+  representations: { id: string; width?: number; height?: number }[],
+  qualityIdOrLabel: string,
+): string | null {
+  const target = qualityHeight(qualityIdOrLabel) ?? 1080;
+  const sized = representations
+    .map((representation) => ({ id: representation.id, size: Math.min(representation.width || Infinity, representation.height || Infinity) }))
+    .filter((representation) => Number.isFinite(representation.size))
+    .sort((a, b) => b.size - a.size);
+  return (sized.find((representation) => representation.size <= target) ?? sized[sized.length - 1])?.id ?? null;
 }
 
 function fetchShortStreamInfo(videoId: string): Promise<StreamInfo> {

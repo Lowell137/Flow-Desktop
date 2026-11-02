@@ -1,4 +1,4 @@
-use crate::api::innertube::core::{locale, remote_decoder};
+use crate::api::innertube::core::{account, locale, remote_decoder};
 use crate::api::innertube::extractors::audio_preference;
 use crate::commands::linked::err as linked_err;
 use crate::db::settings;
@@ -40,7 +40,13 @@ pub async fn add_watch_record(
     record: WatchHistoryRecord,
     pool: State<'_, SqlitePool>,
     profile: State<'_, ActiveProfile>,
+    youtube_service: State<'_, crate::services::youtube_service::YoutubeService>,
 ) -> Result<(), ErrorResponse> {
+    // Signed in, the account holds history and the local copy is left untouched.
+    if account::session().is_some() {
+        youtube_service.account().account_report_watched(&record.video_id).await;
+        return Ok(());
+    }
     watch_history::upsert_watch_record(&pool, &record)
         .await
         .map_err(ErrorResponse::from)?;
@@ -57,6 +63,9 @@ pub async fn add_watch_records_bulk(
     pool: State<'_, SqlitePool>,
     profile: State<'_, ActiveProfile>,
 ) -> Result<(), ErrorResponse> {
+    if account::session().is_some() {
+        return Ok(());
+    }
     watch_history::upsert_watch_records_bulk(&pool, &records)
         .await
         .map_err(ErrorResponse::from)?;
@@ -73,6 +82,9 @@ pub async fn delete_watch_record(
     pool: State<'_, SqlitePool>,
     profile: State<'_, ActiveProfile>,
 ) -> Result<(), ErrorResponse> {
+    if account::session().is_some() {
+        return Ok(());
+    }
     if profile.is_default {
         note_sync_failure(local_edits::record_watch_deletion(&pool, Some(&video_id)).await);
         push_soon(&app);
@@ -88,6 +100,9 @@ pub async fn clear_watch_history(
     pool: State<'_, SqlitePool>,
     profile: State<'_, ActiveProfile>,
 ) -> Result<(), ErrorResponse> {
+    if account::session().is_some() {
+        return Ok(());
+    }
     if profile.is_default {
         note_sync_failure(local_edits::record_watch_deletion(&pool, None).await);
         push_soon(&app);
@@ -103,6 +118,11 @@ pub async fn reset_app_data(
     pool: State<'_, SqlitePool>,
     profile: State<'_, ActiveProfile>,
 ) -> Result<(), ErrorResponse> {
+    if account::session().is_some() {
+        return Err(ErrorResponse::from(crate::errors::AppError::Validation(
+            "Sign out of the YouTube account before resetting local data".to_string(),
+        )));
+    }
     if profile.is_default {
         leave_if_linked(&app).await.map_err(|e| linked_err(&e))?;
     }
@@ -129,6 +149,9 @@ pub async fn set_setting(
     pool: State<'_, SqlitePool>,
     profile: State<'_, ActiveProfile>,
 ) -> Result<(), ErrorResponse> {
+    if account::session().is_some() && ACCOUNT_OWNED_SETTINGS.contains(&key.as_str()) {
+        return Ok(());
+    }
     if profile.is_default {
         note_sync_failure(local_edits::record_blob_write(&pool, &key, &value).await);
         if local_edits::is_synced_setting(&key) {
@@ -141,6 +164,17 @@ pub async fn set_setting(
     apply_backend_setting(&key, Some(&value));
     Ok(())
 }
+
+/// Local library settings the signed-in account replaces; they keep their saved
+/// values until the session ends.
+const ACCOUNT_OWNED_SETTINGS: [&str; 6] = [
+    "liked_items",
+    "user_playlists",
+    "saved_albums",
+    "subscriptions",
+    "subscription_groups",
+    "subscription_tombstones",
+];
 
 /// Settings the backend acts on itself, applied at startup and whenever saved.
 pub(crate) const BACKEND_SETTINGS: [&str; 3] = [

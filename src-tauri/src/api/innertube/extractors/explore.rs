@@ -78,7 +78,7 @@ fn selected_container(page: &Value) -> Option<&Value> {
         .or_else(|| content.get("sectionListRenderer"))
 }
 
-fn video_of(item: &Value) -> Option<VideoSummary> {
+pub(super) fn video_of(item: &Value) -> Option<VideoSummary> {
     video_from_item(item).or_else(|| {
         let lockup = item
             .get("richItemRenderer")

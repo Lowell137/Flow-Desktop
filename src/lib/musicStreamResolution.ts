@@ -36,7 +36,10 @@ export interface MusicStreamOptions {
 type CacheKey = string;
 type CacheEntry = { info: MusicStreamInfo; resolvedAt: number };
 
+const FAILED_PREFETCH_REST_MS = 5 * 60_000;
+
 const cache = new Map<CacheKey, CacheEntry>();
+const failedPrefetches = new Map<CacheKey, number>();
 /** Backend walks still running, which may outlive the wait that started them. */
 const walks = new Map<CacheKey, Promise<MusicStreamInfo>>();
 
@@ -125,9 +128,12 @@ export function prefetchMusicStream(
   if (!videoId) return;
   const key = keyFor(videoId, quality, options);
   if (readCache(key) || walks.has(key)) return;
+  // Warming is asked for again and again while a track plays, so a refused track must rest.
+  const failedAt = failedPrefetches.get(key);
+  if (failedAt !== undefined && Date.now() - failedAt < FAILED_PREFETCH_REST_MS) return;
   void request(videoId, quality, options).catch(() => {
-    // A speculative resolve that fails costs nothing — playing the track will
-    // resolve it again and surface the real error then.
+    // Playing the track will resolve it again and surface the real error then.
+    failedPrefetches.set(key, Date.now());
   });
 }
 

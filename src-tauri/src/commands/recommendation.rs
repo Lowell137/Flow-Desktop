@@ -39,6 +39,9 @@ pub async fn log_interaction(
     percent_watched: f32,
     recommendation_service: State<'_, RecommendationService>,
 ) -> Result<(), ErrorResponse> {
+    if crate::api::innertube::core::account::session().is_some() {
+        return Ok(());
+    }
     let interaction = match interaction_type.to_uppercase().as_str() {
         "CLICK" => InteractionType::Click,
         "LIKED" => InteractionType::Liked,

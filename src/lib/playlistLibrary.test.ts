@@ -201,3 +201,30 @@ describe("add times", () => {
     expect(await addedAt(SAVED_ID)).toEqual({ kept: 1_000, fresh: NOW });
   });
 });
+
+describe("diffAccountLibrary", () => {
+  const list = (id: string, source: "Owned" | "Saved", ...videos: string[]) => ({
+    id,
+    name: id,
+    source,
+    tracks: videos.map((video) => ({ id: video, title: video, channelName: "" })),
+  });
+
+  it("turns a library write into YouTube's actions", async () => {
+    const { diffAccountLibrary, WATCH_LATER_PLAYLIST_ID } = await import("./playlistLibrary");
+    const changes = diffAccountLibrary(
+      [list(WATCH_LATER_PLAYLIST_ID, "Owned", "a", "b"), list("gone", "Saved"), list("same", "Saved")],
+      [list(WATCH_LATER_PLAYLIST_ID, "Owned", "b", "c"), list("same", "Saved"), list("mine", "Owned", "x"), list("theirs", "Saved")],
+    );
+    expect(changes.edits).toEqual([{ playlistId: "WL", add: ["c"], remove: ["a"] }]);
+    expect(changes.created.map((playlist) => playlist.id)).toEqual(["mine"]);
+    expect(changes.saved).toEqual(["theirs"]);
+    expect(changes.unsaved).toEqual(["gone"]);
+  });
+
+  it("does not touch the account when nothing changed", async () => {
+    const { diffAccountLibrary } = await import("./playlistLibrary");
+    const library = [list("same", "Saved", "a")];
+    expect(diffAccountLibrary(library, library)).toEqual({ created: [], saved: [], unsaved: [], edits: [] });
+  });
+});

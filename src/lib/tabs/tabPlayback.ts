@@ -28,7 +28,7 @@ export function playerSnapshot(player: Pick<PlayerState, "currentVideo" | "curre
 function resume(video: ParkedVideo): void {
   const player = usePlayerStore.getState();
   player.setQueue(video.queue, video.currentIndex, video.playlistContext);
-  player.setPipHandoff(video.videoId, video.positionSeconds, true);
+  player.setPipHandoff(video.videoId, video.positionSeconds, !video.paused);
 }
 
 /** Switches tabs, handing the player to the target tab when it holds a parked video. */

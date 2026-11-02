@@ -450,3 +450,14 @@ describe("fullscreen side panel", () => {
     usePlayerStore.getState().setIsQueuePanelOpen(false);
   });
 });
+
+describe("unmute", () => {
+  it("returns to the last audible level when the volume sits at 0", () => {
+    const store = usePlayerStore.getState();
+    store.setVolume(0.4);
+    store.setVolume(0);
+    store.setMuted(true);
+    store.setMuted((value) => !value);
+    expect(usePlayerStore.getState()).toMatchObject({ muted: false, volume: 0.4 });
+  });
+});

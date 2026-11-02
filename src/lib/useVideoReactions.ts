@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { isKnownShort } from "./videoKind";
 import { isMusicVideo } from "./utils";
+import { isSignedIn, setAccountDislike, setAccountLike } from "./api/account";
 import { logInteraction } from "./api/recommendation";
 import { getString } from "./i18n/index";
 import { useFeedActionsStore } from "../store/useFeedActionsStore";
@@ -84,6 +85,10 @@ export function useVideoReactions(video: VideoSummary | null, videoMeta: Reactio
     const previous = state;
     const next: ReactionState = state === "disliked" ? "none" : "disliked";
     setState(next);
+    void isSignedIn().then((signedIn) => {
+      if (!signedIn) return;
+      return next === "disliked" ? setAccountDislike(video.id) : setAccountLike(video.id, false);
+    }).catch((err) => console.warn("Failed to send the dislike to the account", err));
     if (next !== "disliked") return;
     if (likedInLibrary) {
       void toggleVideoLike({ ...video, channelId }).catch((err) => (

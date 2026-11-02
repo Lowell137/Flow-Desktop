@@ -4,6 +4,7 @@ import { useAppSettingsStore } from "../store/useAppSettingsStore";
 import { useFeedHiddenFilter } from "../store/useFeedActionsStore";
 import { getString } from "../lib/i18n/index";
 import { SETTINGS } from "../lib/settings/schema";
+import { useAccountHome } from "../lib/useAccountHome";
 import { useHomeFeed } from "../lib/useHomeFeed";
 import { useContinueWatching } from "../lib/useContinueWatching";
 import {
@@ -36,9 +37,11 @@ export const Home: React.FC<HomeProps> = ({ onPlay, onAddToQueue }) => {
   );
   const hideWatchedVideos = useAppSettingsStore((state) => state.values[SETTINGS.HIDE_WATCHED_VIDEOS] === "true");
   const isHidden = useFeedHiddenFilter({ hideWatched: hideWatchedVideos });
-  const { snapshot, failed, refresh, retryMore, reportViewport } = useHomeFeed(homeFeedEnabled);
+  const account = useAccountHome();
+  const localFeedEnabled = homeFeedEnabled && account.signedIn === false;
+  const { snapshot, failed, refresh, retryMore, reportViewport } = useHomeFeed(localFeedEnabled);
   const continueWatching = useContinueWatching(continueWatchingEnabled);
-  const chips = useHomeChips(homeFeedEnabled);
+  const chips = useHomeChips(localFeedEnabled);
   const chipOptions = useMemo(
     () => [
       { key: ALL_CHIP, label: getString("home_chip_all") },
@@ -108,7 +111,21 @@ export const Home: React.FC<HomeProps> = ({ onPlay, onAddToQueue }) => {
   );
 
   let body: React.ReactNode;
-  if (homeFeedEnabled && chips.feed) {
+  if (account.signedIn) {
+    body = account.failed ? (
+      <HomeFeedMessage
+        title={getString("home_feed_error_title")}
+        body={getString("home_feed_error_body")}
+      />
+    ) : (
+      <VideoGrid
+        videos={account.videos.filter((video) => !isHidden(video))}
+        loading={account.loading}
+        onPlay={onPlay}
+        onAddToQueue={onAddToQueue}
+      />
+    );
+  } else if (homeFeedEnabled && chips.feed) {
     const retryButton = (
       <HomeFeedButton onClick={chips.reload}>
         <RefreshCw size={16} />
@@ -183,7 +200,7 @@ export const Home: React.FC<HomeProps> = ({ onPlay, onAddToQueue }) => {
   // `<main>` above owns the scroll; an auto-height block here would only add a painted layer.
   return (
     <div className="flex-1 space-y-6 px-8 py-6">
-      {homeFeedEnabled && <HomeChipRow chips={chipOptions} selected={chips.selected} onSelect={chips.select} />}
+      {localFeedEnabled && <HomeChipRow chips={chipOptions} selected={chips.selected} onSelect={chips.select} />}
       {body}
     </div>
   );

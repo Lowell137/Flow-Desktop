@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { getAccountMusic, isSignedIn, setAccountSaved } from "../lib/api/account";
 import { getSetting, setSetting } from "../lib/api/db";
 import type { AlbumItem, Artist, SongItem } from "../types/music";
 
@@ -105,6 +106,23 @@ export const useAlbumLibraryStore = create<AlbumLibraryState>((set, get) => ({
 
   load: async () => {
     try {
+      if (await isSignedIn()) {
+        const albums: StoredAlbum[] = [];
+        let continuation: string | null = null;
+        // shortcut: reads 10 pages of saved albums, raise if a library outgrows it.
+        for (let page = 0; page < 10; page++) {
+          const music: Awaited<ReturnType<typeof getAccountMusic>> = await getAccountMusic("albums", continuation);
+          // The album page can hand back a token that serves the same albums again.
+          const fresh = music.albums
+            .map(normalizeStoredAlbum)
+            .filter((album) => !albums.some((known) => known.id === album.id));
+          albums.push(...fresh);
+          continuation = music.continuation;
+          if (!continuation || fresh.length === 0) break;
+        }
+        set({ albums, loaded: true });
+        return;
+      }
       const json = await getSetting(ALBUMS_SETTING_KEY);
       const parsed = json ? (JSON.parse(json) as Array<AlbumItem | StoredAlbum>) : [];
       const albums = Array.isArray(parsed) ? parsed.map(normalizeStoredAlbum) : [];
@@ -124,6 +142,7 @@ export const useAlbumLibraryStore = create<AlbumLibraryState>((set, get) => ({
       await get().removeAlbum(album.browseId);
       return false;
     }
+    if (await isSignedIn()) await setAccountSaved(album.playlistId, true);
     const stored: StoredAlbum = {
       id: album.browseId,
       title: album.title,
@@ -176,6 +195,8 @@ export const useAlbumLibraryStore = create<AlbumLibraryState>((set, get) => ({
   },
 
   removeAlbum: async (id) => {
+    const playlistId = get().getById(id)?.playlistId;
+    if (playlistId && (await isSignedIn())) await setAccountSaved(playlistId, false);
     const updated = get().albums.filter((album) => album.id !== id);
     set({ albums: updated });
     await persist(updated);

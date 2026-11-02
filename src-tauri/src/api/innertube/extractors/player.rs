@@ -1486,7 +1486,8 @@ impl InnertubeClient {
                             fresh_identity_walled,
                         });
                     }
-                    if ends {
+                    // A refusal an anonymous client got may not hold for the account's web clients.
+                    if ends && crate::api::innertube::core::account::session().is_none() {
                         return None;
                     }
                 }

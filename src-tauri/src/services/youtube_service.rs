@@ -23,6 +23,11 @@ impl YoutubeService {
         Self { extractor }
     }
 
+    #[must_use]
+    pub fn account(&self) -> &InnertubeClient {
+        &self.extractor
+    }
+
     pub async fn search_videos(
         &self,
         request: SearchVideosRequest,

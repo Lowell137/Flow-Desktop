@@ -1,3 +1,4 @@
+import { useVideoTabTitle } from "../../lib/tabs/useVideoTabTitle";
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AppWindow, Copy, Plus, Search, X, XCircle } from 'lucide-react';
@@ -45,10 +46,13 @@ function useTabLabel(tab: TabHistory, title: TabTitle | undefined, parked: Parke
   const watchId = watchVideoIdFromPath(entry.pathname);
   const playerTitle = usePlayerStore((s) => (watchId && s.currentVideo?.id === watchId ? s.currentVideo.title : null));
 
+  const parkedTitle = parked?.queue.find((video) => video.id === watchId)?.title;
+  const known = (title?.key === entry.key && title.text) || playerTitle || parkedTitle;
+  const fetchedTitle = useVideoTabTitle(watchId && !known ? watchId : null);
+
   if (title?.key === entry.key && title.text) return title.text;
   if (watchId) {
-    const parkedTitle = parked?.queue.find((video) => video.id === watchId)?.title;
-    return playerTitle || parkedTitle || getString('tabs_untitled');
+    return playerTitle || parkedTitle || fetchedTitle || getString('tabs_untitled');
   }
   if (entry.pathname === '/search') {
     const query = new URLSearchParams(entry.search).get('q')?.trim();

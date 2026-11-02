@@ -210,6 +210,9 @@ export interface PlayerState {
 
 export type FullscreenPanel = "chapters" | "queue" | "chat";
 
+/** Where unmuting returns to; the middle until this run has heard a real level. */
+let lastAudibleVolume = 0.5;
+
 export const usePlayerStore = create<PlayerState>((set, get) => ({
   currentVideo: null,
   isPlaying: false,
@@ -284,10 +287,18 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
 
   setIsPlaying: (isPlaying) => set({ isPlaying }),
 
-  setVolume: (volume) => set({ volume: Math.min(1, Math.max(0, volume)) }),
+  setVolume: (volume) => {
+    const next = Math.min(1, Math.max(0, volume));
+    if (next > 0) lastAudibleVolume = next;
+    set({ volume: next });
+  },
 
   setMuted: (muted) =>
-    set((state) => ({ muted: typeof muted === "function" ? muted(state.muted) : muted })),
+    set((state) => {
+      const next = typeof muted === "function" ? muted(state.muted) : muted;
+      // Unmuting at volume 0 would stay silent while the button looks like it did nothing.
+      return !next && state.volume === 0 ? { muted: next, volume: lastAudibleVolume } : { muted: next };
+    }),
 
   setIsVideoFullscreenTransitioning: (isVideoFullscreenTransitioning) =>
     set({ isVideoFullscreenTransitioning }),

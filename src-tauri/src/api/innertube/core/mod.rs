@@ -1,3 +1,4 @@
+pub mod account;
 pub mod botguard;
 pub mod clients;
 pub mod context;

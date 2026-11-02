@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import * as dashjs from "dashjs";
+import { pickDashRepresentationId } from "../../lib/useShortStream";
 import {
   Bug,
   Captions,
@@ -161,7 +162,8 @@ export function ShortVideoSurface({
   const selectedQualityLabel =
     selectedQualityId === "auto" ? "Auto" : selectedVariant?.qualityLabel || selectedQualityId;
 
-  const useDirect = !!videoUrl;
+  // A manifest plays sound and picture on one clock; two separate elements drift apart.
+  const useDirect = !!videoUrl && !dashUrl;
   const hasSeparateAudio = useDirect && !!audioUrl && audioUrl !== videoUrl;
   const shouldLoop = playbackMode === "loop";
 
@@ -227,8 +229,22 @@ export function ShortVideoSurface({
     if (!video) return;
 
     let syncTimer: number | null = null;
+    let restartTimer: ReturnType<typeof setTimeout> | undefined;
+
+    // WebKit can start a Short with the poster up and no sound, until a pause and play. Do that once.
+    const restartOnce = () => {
+      restartTimer = setTimeout(() => {
+        if (userPausedRef.current || video.paused) return;
+        video.pause();
+        audio?.pause();
+        if (audio?.src) void audio.play().catch(() => {});
+        void video.play().catch(() => {});
+      }, 300);
+    };
 
     const teardown = () => {
+      clearTimeout(restartTimer);
+      video.removeEventListener("playing", restartOnce);
       if (syncTimer != null) {
         window.clearInterval(syncTimer);
         syncTimer = null;
@@ -300,8 +316,9 @@ export function ShortVideoSurface({
         void video.play().catch(() => {});
       };
 
+      // The event arrives late: after a quick pause and play the video is running again.
       const pauseAudio = () => {
-        if (audio && hasSeparateAudio) audio.pause();
+        if (audio && hasSeparateAudio && video.paused) audio.pause();
       };
 
       const advanceOnce = () => {
@@ -328,13 +345,19 @@ export function ShortVideoSurface({
         advanceOnce();
       };
 
+      video.addEventListener("playing", restartOnce, { once: true });
       video.addEventListener("canplay", playBoth);
       video.addEventListener("pause", pauseAudio);
       video.addEventListener("ended", handleEnded);
 
       if (audio && hasSeparateAudio) {
         syncTimer = window.setInterval(() => {
-          if (video.paused || audio.paused) return;
+          if (video.paused) return;
+          // Video running with its sound stopped: the same state a manual pause and play clears.
+          if (audio.paused) {
+            if (!audio.muted) void audio.play().catch(() => {});
+            return;
+          }
           if (audio.currentTime - video.currentTime > AUDIO_DRIFT_TOLERANCE_SECONDS) return;
           realignAudio(false);
         }, 1_000);
@@ -360,6 +383,8 @@ export function ShortVideoSurface({
       const player = dashjs.MediaPlayer().create();
       const dashEvents = dashjs.MediaPlayer.events;
       const playDash = () => {
+        const id = pickDashRepresentationId(player.getRepresentationsByType("video"), selectedQualityId);
+        if (id) player.setRepresentationForTypeById("video", id, false);
         void video.play().catch(() => {});
       };
       const handleDashError = () => onError?.();
@@ -389,12 +414,14 @@ export function ShortVideoSurface({
           // dash.js otherwise keeps these in localStorage, which every profile shares.
           lastBitrateCachingInfo: { enabled: false },
           lastMediaSettingsCachingInfo: { enabled: false },
+          abr: { autoSwitchBitrate: { video: false, audio: false } },
           buffer: { bufferToKeep: 12, bufferTimeDefault: 3 },
         },
       });
       player.on(dashEvents.STREAM_INITIALIZED, playDash);
       player.on(dashEvents.ERROR, handleDashError);
       video.addEventListener("ended", handleEnded);
+      video.addEventListener("playing", restartOnce, { once: true });
       player.initialize(video, dashUrl, true);
       dashRef.current = player;
 
@@ -407,7 +434,7 @@ export function ShortVideoSurface({
     }
 
     return teardown;
-  }, [active, audioUrl, dashUrl, hasSeparateAudio, onRequestAdvance, playbackMode, shouldLoop, useDirect, videoId, videoUrl]);
+  }, [active, audioUrl, dashUrl, hasSeparateAudio, onRequestAdvance, playbackMode, selectedQualityId, shouldLoop, useDirect, videoId, videoUrl]);
 
   useEffect(() => {
     if (!active || playbackMode !== "auto_interval" || autoAdvanceFiredRef.current) return;
@@ -619,7 +646,8 @@ export function ShortVideoSurface({
       <video
         ref={videoRef}
         poster={poster}
-        className={`h-full w-full bg-chrome-black ${fit === "cover" ? "object-cover" : "object-contain"}`}
+        // Out of flow: in flow, a 720p video's native width stretches the card past its 9:16 box.
+        className={`absolute inset-0 h-full w-full bg-chrome-black ${fit === "cover" ? "object-cover" : "object-contain"}`}
         playsInline
         onLoadedMetadata={(e) => {
           const v = e.currentTarget;

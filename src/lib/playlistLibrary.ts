@@ -1,3 +1,10 @@
+import {
+  createAccountPlaylist,
+  editAccountPlaylist,
+  getAccountMusic,
+  isSignedIn,
+  setAccountSaved,
+} from "./api/account";
 import { getSetting, setSetting } from "./api/db";
 import { getPlaylistDetails } from "./api/youtube";
 import { loadRemainingPlaylistVideos } from "./playlistPages";
@@ -24,6 +31,7 @@ export interface StoredPlaylist {
 
 const PLAYLISTS_SETTING_KEY = "user_playlists";
 export const WATCH_LATER_PLAYLIST_ID = "watch-later";
+const ACCOUNT_WATCH_LATER_ID = "WL";
 export const PLAYLIST_LIBRARY_UPDATED_EVENT = "flow:playlist-library-updated";
 
 const WATCH_LATER_PLAYLIST_DEFAULTS: StoredPlaylist = {
@@ -183,7 +191,99 @@ function withLibraryWrite<T>(change: () => Promise<T>): Promise<T> {
   return run;
 }
 
+let accountLibrary: Promise<StoredPlaylist[]> | null = null;
+
+async function readAccountLibrary(): Promise<StoredPlaylist[]> {
+  const details = await getPlaylistDetails(ACCOUNT_WATCH_LATER_ID);
+  const tracks = details.nextPageToken
+    ? await loadRemainingPlaylistVideos(ACCOUNT_WATCH_LATER_ID, details.videos, details.nextPageToken)
+    : details.videos;
+  const playlists: StoredPlaylist[] = [{ ...WATCH_LATER_PLAYLIST_DEFAULTS, tracks }];
+  let continuation: string | null = null;
+  // shortcut: reads 10 pages of the account's playlists, raise if a library outgrows it.
+  for (let page = 0; page < 10; page++) {
+    const music: Awaited<ReturnType<typeof getAccountMusic>> = await getAccountMusic("playlists", continuation);
+    let added = 0;
+    for (const item of music.playlists) {
+      // Likes have their own page outside the music section.
+      if (item.id === "LM" || playlists.some((known) => known.id === item.id)) continue;
+      added += 1;
+      playlists.push({
+        id: item.id,
+        name: item.title,
+        sourceTitle: item.title,
+        tracks: [],
+        source: "Saved",
+        thumbnailUrl: item.thumbnail ?? null,
+        videoCountText: item.songCountText ?? null,
+      });
+    }
+    continuation = music.continuation;
+    // The page can hand back a token that serves the same playlists again.
+    if (!continuation || added === 0) break;
+  }
+  return playlists;
+}
+
+export interface AccountLibraryChanges {
+  created: StoredPlaylist[];
+  saved: string[];
+  unsaved: string[];
+  edits: { playlistId: string; add: string[]; remove: string[] }[];
+}
+
+/** What a library write changed, in the terms YouTube's endpoints take. */
+export function diffAccountLibrary(before: StoredPlaylist[], after: StoredPlaylist[]): AccountLibraryChanges {
+  const previous = new Map(before.map((playlist) => [playlist.id, playlist]));
+  const changes: AccountLibraryChanges = { created: [], saved: [], unsaved: [], edits: [] };
+  for (const playlist of after) {
+    const old = previous.get(playlist.id);
+    if (!old) {
+      if (playlist.source === "Saved") changes.saved.push(playlist.id);
+      else changes.created.push(playlist);
+      continue;
+    }
+    const oldIds = new Set(old.tracks.map((track) => track.id));
+    const newIds = new Set(playlist.tracks.map((track) => track.id));
+    const add = [...newIds].filter((id) => !oldIds.has(id));
+    const remove = [...oldIds].filter((id) => !newIds.has(id));
+    if (add.length || remove.length) {
+      const playlistId = playlist.id === WATCH_LATER_PLAYLIST_ID ? ACCOUNT_WATCH_LATER_ID : playlist.id;
+      changes.edits.push({ playlistId, add, remove });
+    }
+  }
+  const kept = new Set(after.map((playlist) => playlist.id));
+  // shortcut: removing the account's own playlist only drops it for this run; deleting
+  // it from YouTube can't be undone, so that stays on youtube.com.
+  changes.unsaved = before.filter((playlist) => !kept.has(playlist.id) && playlist.source === "Saved").map((playlist) => playlist.id);
+  return changes;
+}
+
+async function writeAccountLibrary(next: StoredPlaylist[]): Promise<void> {
+  const before = await (accountLibrary ??= readAccountLibrary());
+  const changes = diffAccountLibrary(before, next);
+  const created = new Map<string, string>();
+  for (const playlist of changes.created) {
+    created.set(playlist.id, await createAccountPlaylist(playlist.name, playlist.tracks.map((track) => track.id)));
+  }
+  for (const id of changes.saved) await setAccountSaved(id, true);
+  for (const id of changes.unsaved) await setAccountSaved(id, false);
+  for (const edit of changes.edits) await editAccountPlaylist(edit.playlistId, edit.add, edit.remove);
+  accountLibrary = Promise.resolve(next.map((playlist) => ({
+    ...playlist,
+    id: created.get(playlist.id) ?? playlist.id,
+    source: created.has(playlist.id) ? "Saved" : playlist.source,
+  })));
+}
+
 export const loadStoredPlaylists = async () => {
+  if (await isSignedIn()) {
+    accountLibrary ??= readAccountLibrary().catch((error: unknown) => {
+      accountLibrary = null;
+      throw error;
+    });
+    return withRequiredPlaylists(await accountLibrary);
+  }
   const playlistsJson = await getSetting(PLAYLISTS_SETTING_KEY);
   if (!playlistsJson) return withRequiredPlaylists([]);
 
@@ -266,7 +366,11 @@ export const persistStoredPlaylists = async (playlists: StoredPlaylist[]) => {
     ...playlist,
     tracks: (playlist.tracks ?? []).map((track) => withPublishedAt(track, now)),
   }));
-  await setSetting(PLAYLISTS_SETTING_KEY, JSON.stringify(withRequiredPlaylists(stamped)));
+  if (await isSignedIn()) {
+    await writeAccountLibrary(withRequiredPlaylists(stamped));
+  } else {
+    await setSetting(PLAYLISTS_SETTING_KEY, JSON.stringify(withRequiredPlaylists(stamped)));
+  }
   if (typeof window !== "undefined") {
     window.dispatchEvent(new Event(PLAYLIST_LIBRARY_UPDATED_EVENT));
   }

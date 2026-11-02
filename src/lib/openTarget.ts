@@ -1,5 +1,6 @@
 import type { MouseEvent as ReactMouseEvent } from "react";
-import { readStreamInfoEntry } from "./streamResolution";
+import { prefetchStreamInfo, readStreamInfoEntry } from "./streamResolution";
+import { watchVideoIdFromPath } from "./watchRouteSync";
 import { wantsBackgroundTab } from "./clickIntent";
 import { tabsEnabled } from "./tabs/tabsEnabled";
 import { openAppWindow, type WindowVideoHandoff } from "./api/appWindow";
@@ -20,7 +21,21 @@ export function routeForVideo(video: Pick<VideoSummary, "id" | "isShort">): stri
 /** Opens `route` in a background tab; false, and nothing opened, while tabs are off. */
 export function openInNewTab(route: string): boolean {
   if (!tabsEnabled()) return false;
-  useTabsStore.getState().openTab(route);
+  const tabs = useTabsStore.getState();
+  const id = tabs.openTab(route);
+  const videoId = watchVideoIdFromPath(route);
+  if (videoId) {
+    // Its stream is resolved now, so the tab opens ready, paused until asked to play.
+    prefetchStreamInfo(videoId);
+    tabs.park(id, {
+      videoId,
+      positionSeconds: 0,
+      queue: [{ id: videoId, title: "", channelName: "" }],
+      currentIndex: 0,
+      playlistContext: null,
+      paused: true,
+    });
+  }
   return true;
 }
 

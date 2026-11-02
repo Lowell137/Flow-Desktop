@@ -19,6 +19,8 @@ export interface ParkedVideo {
   queue: VideoSummary[];
   currentIndex: number;
   playlistContext: PlaylistContext | null;
+  /** Opened in the background and never played: it loads paused when its tab comes up. */
+  paused?: boolean;
 }
 
 /** A tab's title, tied to the page it was read from so a stale one is never shown. */

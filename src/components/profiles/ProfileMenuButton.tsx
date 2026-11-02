@@ -1,14 +1,24 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { useNavigate } from "react-router-dom";
-import { Check, Plus, UsersRound } from "lucide-react";
+import { Check, FileKey, LogIn, LogOut, Plus, UsersRound } from "lucide-react";
 import { AnchoredPortalMenu, type MenuAnchor } from "../ui/AnchoredPortalMenu";
 import { ProfileAvatar } from "../ui/ProfileAvatar";
 import { moveMenuFocus } from "../ui/menuFocus";
 import { ProfileEditorDialog } from "./ProfileEditorDialog";
 import type { Profile } from "../../lib/api/profiles";
+import { clearAccountCache } from "../../lib/accountCache";
+import {
+  getAccountProfile,
+  importCookiesFile,
+  isSignedIn,
+  signInWithGoogle,
+  signOut,
+  type AccountProfile,
+} from "../../lib/api/account";
 import { getString } from "../../lib/i18n/index";
 import { profileDisplayName } from "../../lib/profiles/display";
 import { profileErrorMessage } from "../../lib/profiles/profileErrors";
+import { useProxiedImageUrl } from "../../lib/useProxiedImageUrl";
 import { useProfilesStore } from "../../store/useProfilesStore";
 import { useUiStore } from "../../store/useUiStore";
 
@@ -25,6 +35,16 @@ export function ProfileMenuButton() {
   const [anchor, setAnchor] = useState<MenuAnchor | null>(null);
   const [creating, setCreating] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
+  const [account, setAccount] = useState<AccountProfile | null>(null);
+  const accountPhoto = useProxiedImageUrl(account?.photoUrl);
+  const [signedIn, setSignedIn] = useState(false);
+
+  useEffect(() => {
+    void isSignedIn().then((value) => {
+      setSignedIn(value);
+      if (value) void getAccountProfile().then(setAccount).catch((error) => console.warn("Failed to load the account profile", error));
+    });
+  }, []);
 
   useEffect(() => {
     if (!view) void load();
@@ -37,9 +57,20 @@ export function ProfileMenuButton() {
   const active = view?.profiles.find((profile) => profile.id === view.activeId);
   const others = view?.profiles.filter((profile) => profile.id !== view.activeId) ?? [];
   const atLimit = view ? view.profiles.length >= view.maxProfiles : true;
-  const activeName = active ? profileDisplayName(active) : getString("profiles_default_name");
+  const activeName = account?.name ?? (active ? profileDisplayName(active) : getString("profiles_default_name"));
 
   const close = () => setAnchor(null);
+  const accountAction = (action: () => Promise<unknown>) => {
+    close();
+    action().catch((reason: unknown) =>
+      showToast({ variant: "error", message: reason instanceof Error ? reason.message : getString("account_action_failed") }),
+    );
+  };
+  const importCookies = async () => {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const path = await open({ multiple: false, directory: false, filters: [{ name: "cookies.txt", extensions: ["txt"] }] });
+    if (typeof path === "string") await importCookiesFile(path);
+  };
   const toggle = (button: HTMLElement) => {
     if (anchor) return close();
     const rect = button.getBoundingClientRect();
@@ -57,11 +88,11 @@ export function ProfileMenuButton() {
 
   const avatar = (profile: Profile, size: "md" | "lg") => (
     <ProfileAvatar
-      name={profileDisplayName(profile)}
+      name={profile === active ? activeName : profileDisplayName(profile)}
       colorKey={profile.colorKey}
-      kind={profile.avatar.kind}
+      kind={profile === active && accountPhoto ? "photo" : profile.avatar.kind}
       emoji={profile.avatar.emoji}
-      photoSrc={view?.photos[profile.id]}
+      photoSrc={profile === active && accountPhoto ? accountPhoto : view?.photos[profile.id]}
       size={size}
     />
   );
@@ -105,6 +136,27 @@ export function ProfileMenuButton() {
                 <span className="truncate">{profileDisplayName(profile)}</span>
               </button>
             ))}
+            <div role="separator" className="mx-1.5 my-1.5 border-t border-chrome-neutral-800" />
+            {signedIn ? (
+              <button type="button" role="menuitem" onClick={() => accountAction(() => {
+                clearAccountCache();
+                return signOut();
+              })} className={ROW}>
+                <LogOut className="h-4 w-4" aria-hidden="true" />
+                {getString("account_sign_out")}
+              </button>
+            ) : (
+              <>
+                <button type="button" role="menuitem" onClick={() => accountAction(signInWithGoogle)} className={ROW}>
+                  <LogIn className="h-4 w-4" aria-hidden="true" />
+                  {getString("account_sign_in_google")}
+                </button>
+                <button type="button" role="menuitem" onClick={() => accountAction(importCookies)} className={ROW}>
+                  <FileKey className="h-4 w-4" aria-hidden="true" />
+                  {getString("account_sign_in_cookies")}
+                </button>
+              </>
+            )}
             <div role="separator" className="mx-1.5 my-1.5 border-t border-chrome-neutral-800" />
             <button
               type="button"

@@ -75,7 +75,7 @@ export function useTabSession(): boolean {
       .catch(() => [null, null])
       .then(([enabled, raw]) => {
         if (cancelled) return;
-        const session = enabled === "true" ? parseTabSession(raw) : null;
+        const session = enabled !== "false" ? parseTabSession(raw) : null;
         if (session) {
           const tabs = useTabsStore.getState();
           tabs.restoreTabs(restoreTabSession(session));
