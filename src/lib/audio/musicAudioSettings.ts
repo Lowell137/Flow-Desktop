@@ -30,15 +30,22 @@ export function bindMusicAudioSettings(): void {
       ? Number(getSettingValue(SETTINGS.MUSIC_CROSSFADE_SECONDS))
       : 0;
   const applyCrossfade = () => musicAudioEngine.setCrossfadeEnabled(crossfadeSeconds() > 0);
+  const applyBoost = () => {
+    const percent = Number(getSettingValue(SETTINGS.VOLUME_BOOST_PERCENT));
+    const on = getSettingValue(SETTINGS.ALLOW_VOLUME_BOOST) === "true" && Number.isFinite(percent);
+    musicAudioEngine.setBoost(on ? percent / 100 : 1);
+  };
 
   applyNormalization();
   applySpeed();
   applyCrossfade();
+  applyBoost();
   useAppSettingsStore.subscribe((state, previous) => {
     if (state.values === previous.values) return;
     applyNormalization();
     applySpeed();
     applyCrossfade();
+    applyBoost();
   });
 
   // The song clock ticks about four times a second; the fade starts on the tick that enters its

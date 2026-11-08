@@ -1,8 +1,12 @@
 import { logToBackend } from "../diagnostics";
 import { createAudioContext, keepRunning, resumeWithin } from "./audioContext";
 import { EQ_GRAPH_OFF, type EqGraphSpec } from "./eq/graphPlan";
-import { EqChain } from "./eqChain";
+import { EqChain, RAMP_TIME_CONSTANT } from "./eqChain";
+import { MAX_BOOST } from "./musicAudioEngine";
 import { probeMediaElementRouting } from "./webAudioProbe";
+
+/** Where the limiter starts pulling peaks down while a boost is on. */
+const BOOST_LIMIT_DB = -3;
 
 // One context for every video player in this window; each player keeps its own chain.
 let sharedContext: AudioContext | null = null;
@@ -43,8 +47,30 @@ export class MediaEqEngine {
   private sources = new WeakMap<HTMLMediaElement, MediaElementAudioSourceNode>();
   private watched = new WeakSet<HTMLMediaElement>();
   private spec: EqGraphSpec = EQ_GRAPH_OFF;
-  private engaged = false;
+  private eqEngaged = false;
+  private boost = 1;
+  private boostGain: GainNode | null = null;
+  private limiter: DynamicsCompressorNode | null = null;
   private routing = false;
+
+  /** Routing is needed once the equalizer changes the sound or the volume is amplified. */
+  private get engaged(): boolean {
+    return this.eqEngaged || this.boost > 1;
+  }
+
+  /** `factor` of 1 is off; above 1 the video's sound is amplified (and peaks limited). */
+  setBoost(factor: number): void {
+    this.boost = Number.isFinite(factor) ? Math.max(1, Math.min(MAX_BOOST, factor)) : 1;
+    if (this.engaged) void this.route();
+    this.applyBoost();
+  }
+
+  private applyBoost(): void {
+    if (!sharedContext || !this.boostGain || !this.limiter) return;
+    const t = sharedContext.currentTime;
+    this.boostGain.gain.setTargetAtTime(this.boost, t, RAMP_TIME_CONSTANT);
+    this.limiter.threshold.setTargetAtTime(this.boost > 1 ? BOOST_LIMIT_DB : 0, t, RAMP_TIME_CONSTANT);
+  }
 
   /** The player's current media elements; an element that left is let go. */
   setElements(elements: (HTMLMediaElement | null)[]): void {
@@ -70,15 +96,19 @@ export class MediaEqEngine {
 
   setEq(spec: EqGraphSpec, engaged: boolean): void {
     this.spec = spec;
-    this.engaged = engaged;
-    if (engaged) void this.route();
+    this.eqEngaged = engaged;
+    if (this.engaged) void this.route();
     this.chain?.apply(spec);
   }
 
   dispose(): void {
     this.setElements([]);
     this.chain?.output.disconnect();
+    this.boostGain?.disconnect();
+    this.limiter?.disconnect();
     this.chain = null;
+    this.boostGain = null;
+    this.limiter = null;
   }
 
   private async route(): Promise<void> {
@@ -93,8 +123,17 @@ export class MediaEqEngine {
       if ((await checkRouting(ctx)) !== true || !this.engaged) return;
       if (!this.chain) {
         this.chain = new EqChain(ctx);
-        this.chain.output.connect(ctx.destination);
+        this.boostGain = ctx.createGain();
+        this.limiter = ctx.createDynamicsCompressor();
+        this.limiter.knee.value = 0;
+        this.limiter.ratio.value = 20;
+        this.limiter.attack.value = 0.003;
+        this.limiter.release.value = 0.1;
+        this.chain.output.connect(this.boostGain);
+        this.boostGain.connect(this.limiter);
+        this.limiter.connect(ctx.destination);
         this.chain.apply(this.spec);
+        this.applyBoost();
       }
       for (const el of this.elements) this.connect(ctx, this.chain, el);
     } catch (error) {

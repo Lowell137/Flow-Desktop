@@ -93,6 +93,7 @@ const SHARED: &[Shared] = &[
 /// credentials, cache sizes, private ids and Deep Flow runtime state are deliberately absent.
 const DESKTOP_ONLY: &[&str] = &[
     "allow_volume_boost",
+    "volume_boost_percent",
     "remember_playback_speed",
     "custom_speeds_enabled",
     "custom_speed_presets",

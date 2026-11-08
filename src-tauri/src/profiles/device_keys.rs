@@ -5,8 +5,9 @@
 
 /// Device settings defined in `src/lib/settings/schema.ts` (`SETTING_SCOPES`); a test keeps the
 /// two lists equal.
-pub const SCHEMA_DEVICE_KEYS: [&str; 44] = [
+pub const SCHEMA_DEVICE_KEYS: [&str; 45] = [
     "allow_volume_boost",
+    "volume_boost_percent",
     "player_volume",
     "player_muted",
     "long_press_playback_speed",

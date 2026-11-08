@@ -8,6 +8,11 @@ import { pastListedEnd, playableLength } from "./listedLength";
 import { volumeGain } from "./volumeCurve";
 import { webAudioHears } from "./webAudioFormats";
 
+/** The most the music can be amplified past the slider: 400%. */
+export const MAX_BOOST = 4;
+/** Where the limiter starts pulling peaks down while a boost is on. */
+const BOOST_LIMIT_DB = -3;
+
 /**
  * One of the two <audio> elements. While one plays, the other can hold the next
  * track already buffered, so the change at a track boundary is a swap rather
@@ -66,6 +71,10 @@ class MusicAudioEngine {
   private ctx: AudioContext | null = null;
   private chain: EqChain | null = null;
   private volGain: GainNode | null = null;
+  /** Catches the peaks a boost above 100% would otherwise clip. */
+  private limiter: DynamicsCompressorNode | null = null;
+  /** Gain on top of the slider, 1 (off) up to MAX_BOOST. Only the graph can go above 1. */
+  private boost = 1;
 
   private graphReady = false;
   private webAudioFailed = false;
@@ -135,8 +144,14 @@ class MusicAudioEngine {
 
       this.chain = new EqChain(ctx);
       this.volGain = ctx.createGain();
+      this.limiter = ctx.createDynamicsCompressor();
+      this.limiter.knee.value = 0;
+      this.limiter.ratio.value = 20;
+      this.limiter.attack.value = 0.003;
+      this.limiter.release.value = 0.1;
       this.chain.output.connect(this.volGain);
-      this.volGain.connect(ctx.destination);
+      this.volGain.connect(this.limiter);
+      this.limiter.connect(ctx.destination);
 
       // Each element keeps its own loudness and crossfade gains, since the two
       // hold different tracks; both feed the one shared EQ and volume chain.
@@ -431,6 +446,18 @@ class MusicAudioEngine {
     this.applyGain();
   }
 
+  /** `factor` of 1 is off; above 1 the sound is amplified and runs through the graph. */
+  setBoost(factor: number): void {
+    this.boost = Number.isFinite(factor) ? Math.max(1, Math.min(MAX_BOOST, factor)) : 1;
+    this.engageWhilePlaying();
+    this.applyGain();
+  }
+
+  /** The gain the slider asks for, boost included, before mute and the sleep-timer fade. */
+  private sliderGain(): number {
+    return volumeGain(this.volume) * (this.graphReady ? this.boost : 1);
+  }
+
   setMuted(muted: boolean): void {
     this.muted = muted;
     this.applyGain();
@@ -459,7 +486,7 @@ class MusicAudioEngine {
       const gain = this.volGain.gain;
       const t = this.ctx.currentTime;
       gain.cancelScheduledValues(t);
-      gain.setValueAtTime((this.muted ? 0 : volumeGain(this.volume)) * this.fadeLevel, t);
+      gain.setValueAtTime((this.muted ? 0 : this.sliderGain()) * this.fadeLevel, t);
       gain.linearRampToValueAtTime(0, t + Math.max(0, remainingSeconds));
       return;
     }
@@ -475,10 +502,14 @@ class MusicAudioEngine {
   }
 
   private applyGain(): void {
-    const vol = (this.muted ? 0 : volumeGain(this.volume)) * this.fadeLevel;
+    const vol = (this.muted ? 0 : this.sliderGain()) * this.fadeLevel;
 
     const t = this.ctx?.currentTime ?? 0;
     if (this.graphReady && this.volGain) this.volGain.gain.setTargetAtTime(vol, t, RAMP_TIME_CONSTANT);
+    // Idle at 0 dB (no reduction); with a boost, pull peaks down before they clip.
+    if (this.graphReady && this.limiter) {
+      this.limiter.threshold.setTargetAtTime(this.boost > 1 ? BOOST_LIMIT_DB : 0, t, RAMP_TIME_CONSTANT);
+    }
     // A scheduled crossfade owns the fade gains until it ends; a stepped one moves `slot.fade`.
     const scheduledFade = !!this.fading && !this.fading.cancelSteps;
     for (const slot of this.slots) {
@@ -523,7 +554,7 @@ class MusicAudioEngine {
   }
 
   private needsGraph(): boolean {
-    return this.eqEngaged || this.crossfadeEnabled;
+    return this.eqEngaged || this.crossfadeEnabled || this.boost > 1;
   }
 
   /**

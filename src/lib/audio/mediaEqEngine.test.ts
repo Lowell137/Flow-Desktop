@@ -30,6 +30,15 @@ class FakeContext extends EventTarget {
     super();
     contexts.push(this);
   }
+  createDynamicsCompressor() {
+    return Object.assign(new FakeNode(), {
+      threshold: new FakeParam(),
+      knee: new FakeParam(),
+      ratio: new FakeParam(),
+      attack: new FakeParam(),
+      release: new FakeParam(),
+    });
+  }
   createGain() {
     return Object.assign(new FakeNode(), { gain: new FakeParam() });
   }
@@ -95,6 +104,16 @@ describe("MediaEqEngine", () => {
     engine.setEq(rock, false);
     await settle();
     expect(contexts).toHaveLength(0);
+  });
+
+  it("routes the video for a volume boost even with the equalizer off", async () => {
+    const { engine } = await freshEngine();
+    const video = media<HTMLVideoElement>("video");
+    engine.setElements([video, null]);
+    engine.setEq(rock, false);
+    engine.setBoost(2);
+    await settle();
+    expect(contexts[0]!.sources.slice(1)).toEqual([video]);
   });
 
   it("routes the video and its separate audio once each, and follows a new audio element", async () => {

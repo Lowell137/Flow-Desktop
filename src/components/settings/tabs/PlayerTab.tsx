@@ -20,6 +20,7 @@ export function PlayerTab() {
   const [stableVolume, setStableVolume] = useBoolPref(SETTINGS.STABLE_VOLUME_ENABLED, false);
   const [videoLoudness, setVideoLoudness] = useBoolPref(SETTINGS.VIDEO_LOUDNESS_NORMALIZATION, false);
   const [volumeBoost, setVolumeBoost] = useBoolPref(SETTINGS.ALLOW_VOLUME_BOOST, false);
+  const [volumeBoostPercent, setVolumeBoostPercent] = useNumberPref(SETTINGS.VOLUME_BOOST_PERCENT, 200);
 
   const [rememberSpeed, setRememberSpeed] = useBoolPref(SETTINGS.REMEMBER_PLAYBACK_SPEED, false);
   const [playbackSpeed, setPlaybackSpeed] = usePreference(SETTINGS.PLAYBACK_SPEED, '1.0');
@@ -69,9 +70,16 @@ export function PlayerTab() {
         <SettingItem title={getString('settings_video_loudness')} description={getString('settings_video_loudness_desc')}>
           <ToggleSwitch checked={videoLoudness} onChange={setVideoLoudness} />
         </SettingItem>
-        <SettingItem title={getString('settings_volume_boost')} description={getString('settings_volume_boost_desc')} disabled={isSettingDisabledUntilWired(SETTINGS.ALLOW_VOLUME_BOOST)}>
-          <ToggleSwitch checked={volumeBoost} onChange={setVolumeBoost} disabled={isSettingDisabledUntilWired(SETTINGS.ALLOW_VOLUME_BOOST)} />
+        <SettingItem title={getString('settings_volume_boost')} description={getString('settings_volume_boost_desc')}>
+          <ToggleSwitch checked={volumeBoost} onChange={setVolumeBoost} />
         </SettingItem>
+        {volumeBoost && (
+          <SettingItem title={getString('settings_volume_boost_level')}>
+            <Select value={String(volumeBoostPercent)} onChange={(v) => setVolumeBoostPercent(Number(v))} options={
+              [125, 150, 200, 300, 400].map((p) => ({ value: String(p), label: `${p}%` }))
+            } />
+          </SettingItem>
+        )}
       </SettingsGroup>
 
       <SettingsGroup title={getString('settings_group_speed')}>

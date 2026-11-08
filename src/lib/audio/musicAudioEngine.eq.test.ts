@@ -71,6 +71,15 @@ class FakeContext extends EventTarget {
   createWaveShaper() {
     return new FakeShaper();
   }
+  createDynamicsCompressor() {
+    return Object.assign(new FakeNode(), {
+      threshold: new FakeParam(-24),
+      knee: new FakeParam(30),
+      ratio: new FakeParam(12),
+      attack: new FakeParam(0.003),
+      release: new FakeParam(0.25),
+    });
+  }
   createMediaElementSource(el: HTMLMediaElement) {
     this.sources.push(el);
     return new FakeNode();
@@ -247,5 +256,20 @@ describe("crossfade without WebAudio", () => {
     await vi.advanceTimersByTimeAsync(1_200);
     expect(pair[1].volume).toBe(1);
     expect(pair[0].getAttribute("src")).toBeNull();
+  });
+});
+
+describe("volume boost", () => {
+  it("brings the graph in and amplifies past the slider", () => {
+    const el = document.createElement("audio");
+    const el2 = document.createElement("audio");
+    musicAudioEngine.attach([el, el2]);
+    Object.defineProperty(el, "paused", { value: false, configurable: true });
+    musicAudioEngine.setVolume(1);
+    musicAudioEngine.setBoost(2);
+    const ctx = contexts[contexts.length - 1]!;
+    const master = ctx.gains.find((g) => g.gain.setTargetAtTime.mock.calls.some((c) => c[0] === 2));
+    expect(master).toBeDefined();
+    musicAudioEngine.setBoost(1);
   });
 });
