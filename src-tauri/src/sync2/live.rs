@@ -14,12 +14,13 @@ use serde::Deserialize;
 use tauri::AppHandle;
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::handshake::derive_accept_key;
-use tokio_tungstenite::tungstenite::protocol::Role;
+use tokio_tungstenite::tungstenite::protocol::{Role, WebSocketConfig};
 use tokio_tungstenite::tungstenite::{Bytes, Message};
 
 use super::actions::{local, stopped};
 use super::engine::Result;
 use super::live_hub::{announce, receive, set_server_online, subscribe};
+use super::live_seal::MAX_LIVE_MESSAGE;
 use super::sealed::random_bytes;
 use super::server::{self, ServerStore, StoreError};
 use super::service::sync_after;
@@ -74,7 +75,10 @@ impl ServerStore {
             });
         }
         let upgraded = response.upgrade().await.map_err(StoreError::Network)?;
-        Ok(WebSocketStream::from_raw_socket(upgraded, Role::Client, None).await)
+        let config = WebSocketConfig::default()
+            .max_message_size(Some(MAX_LIVE_MESSAGE))
+            .max_frame_size(Some(MAX_LIVE_MESSAGE));
+        Ok(WebSocketStream::from_raw_socket(upgraded, Role::Client, Some(config)).await)
     }
 }
 

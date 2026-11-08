@@ -3,11 +3,12 @@ import type { LinkedStatus } from "../../../lib/api/linked";
 import { useLinkedDevicesStore } from "../../../store/useLinkedDevicesStore";
 import { Button } from "../../ui/Button";
 import { Card } from "./Card";
-import { LeaveGroup } from "./LeaveGroup";
+import { ConfirmedAction } from "./ConfirmedAction";
 
 /**
- * Shown once the group shut this device out. A removal it verified already forgot the group;
- * a server that refuses it leaves forgetting to the user.
+ * Shown once the group shut this device out. A removal that extended what it had applied already
+ * forgot the group; a server that refuses it, or a roster that replaced what it had applied, leaves
+ * forgetting to the user.
  */
 export function StoppedNotice({ reason }: { reason: NonNullable<LinkedStatus["stopped"]> }) {
   const { forget, busy } = useLinkedDevicesStore();
@@ -20,9 +21,16 @@ export function StoppedNotice({ reason }: { reason: NonNullable<LinkedStatus["st
       </Card>
     );
   }
+  if (reason === "linkedRemovalUnconfirmed") {
+    return (
+      <Card title={getString("linked_unconfirmed_title")} subtitle={getString("linked_unconfirmed_body")}>
+        <ConfirmedAction action="forget" label={getString("linked_forget")} confirm={getString("linked_forget_confirm")} />
+      </Card>
+    );
+  }
   return (
     <Card title={getString("linked_refused_title")} subtitle={getString("linked_refused_body")}>
-      <LeaveGroup action="forget" label={getString("linked_forget")} confirm={getString("linked_forget_confirm")} />
+      <ConfirmedAction action="forget" label={getString("linked_forget")} confirm={getString("linked_forget_confirm")} />
     </Card>
   );
 }

@@ -1,7 +1,8 @@
 //! The Flow sync server as a store (spec/api.md). Requests are signed in with this member's
 //! roster key; the server never sees anything but sealed objects.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
@@ -12,10 +13,12 @@ use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
 use super::curve::sign;
-use super::http::Transport;
+use super::envelope::MAX_OBJECT_SIZE;
+use super::http::{MAX_RESPONSE, Transport, read_body};
 use super::kdf::tag;
 use super::keys::MemberSecrets;
 use super::mailbox::Mailbox;
+use super::read_budget::ReadBudget;
 use super::roster::{Entry, parse_entry};
 use super::store::Store;
 
@@ -52,6 +55,14 @@ pub enum StoreError {
     Protocol(#[from] super::Error),
 }
 
+impl StoreError {
+    /// The store answered and turned a write down. A refused sign-in or a store that lost the
+    /// group isn't this: those end the run.
+    pub fn refused_write(&self) -> bool {
+        matches!(self, Self::Refused { status, code } if *status != 401 && code != "unclaimed")
+    }
+}
+
 pub type Result<T> = std::result::Result<T, StoreError>;
 
 /// Whether an append landed, or lost to another device's append at the same head.
@@ -67,7 +78,7 @@ pub struct ChangedObject {
     pub size: u64,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct Session {
     instance: Option<String>,
     group: Option<String>,
@@ -81,6 +92,18 @@ pub struct ServerStore {
     pub(super) live: Client,
     member: MemberSecrets,
     session: Mutex<Session>,
+}
+
+/// Sessions by server URL and member, kept in memory only: every sync run connects again, and a
+/// token lasts 15 minutes (spec/api.md).
+type Sessions = HashMap<(String, [u8; 16]), Session>;
+
+static SESSIONS: LazyLock<std::sync::Mutex<Sessions>> = LazyLock::new(Default::default);
+
+fn sessions() -> std::sync::MutexGuard<'static, Sessions> {
+    SESSIONS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn now_ms() -> u64 {
@@ -100,6 +123,15 @@ impl ServerStore {
     ) -> Result<Self> {
         let base = Url::parse(url).map_err(|_| StoreError::Insecure)?;
         let transport = Transport::for_url(&base).await?;
+        let session = sessions()
+            .get(&(base.to_string(), member.did))
+            .filter(|kept| kept.instance == instance && kept.group == group)
+            .cloned()
+            .unwrap_or(Session {
+                instance,
+                group,
+                token: None,
+            });
         Ok(Self {
             base,
             client: transport.client()?,
@@ -109,11 +141,7 @@ impl ServerStore {
                 .build()
                 .map_err(StoreError::Network)?,
             member,
-            session: Mutex::new(Session {
-                instance,
-                group,
-                token: None,
-            }),
+            session: Mutex::new(session),
         })
     }
 
@@ -182,6 +210,7 @@ impl ServerStore {
             group: Some(group),
             token: Some((value.clone(), expires)),
         };
+        sessions().insert((self.base.to_string(), self.member.did), session.clone());
         Ok(value)
     }
 
@@ -329,13 +358,8 @@ impl ServerStore {
         if response.status() == StatusCode::NOT_FOUND {
             return Ok(None);
         }
-        let response = check(response).await?;
         Ok(Some(
-            response
-                .bytes()
-                .await
-                .map_err(StoreError::Network)?
-                .to_vec(),
+            read_body(check(response).await?, MAX_OBJECT_SIZE).await?,
         ))
     }
 }
@@ -352,6 +376,29 @@ impl Store for ServerStore {
             .map(parse_entry)
             .collect::<std::result::Result<_, _>>()?)
     }
+
+    /// The whole roster, page by page. A page that doesn't advance ends the read.
+    async fn roster_view(&self) -> Result<Vec<Entry>> {
+        let mut entries: Vec<Entry> = Vec::new();
+        let mut after = -1;
+        let mut budget = ReadBudget::default();
+        loop {
+            let page = self.roster_after(after).await?;
+            let Some(last) = page.last() else {
+                return Ok(entries);
+            };
+            let seq = i64::try_from(last.seq).map_err(|_| StoreError::Malformed)?;
+            if seq <= after {
+                return Err(StoreError::Malformed);
+            }
+            after = seq;
+            if !budget.take(page.len()) {
+                return Err(StoreError::Malformed);
+            }
+            entries.extend(page);
+        }
+    }
+
     async fn append_roster(
         &self,
         head: &str,
@@ -371,7 +418,7 @@ impl Store for ServerStore {
             .authorized(Method::POST, "v1/roster", Some(body))
             .await?;
         if response.status() == StatusCode::CONFLICT {
-            let value: Value = response.json().await.map_err(|_| StoreError::Malformed)?;
+            let value = json(response).await?;
             let head = value["head"]
                 .as_str()
                 .ok_or(StoreError::Malformed)?
@@ -380,7 +427,8 @@ impl Store for ServerStore {
         }
         decode_empty(response).await.map(|()| Appended::Done)
     }
-    async fn key(&self, epoch: u32, name: &str) -> Result<Option<Vec<u8>>> {
+    /// The server names a wrap by epoch alone: only one entry can start an epoch there.
+    async fn key(&self, epoch: u32, _kc: &str, name: &str) -> Result<Option<Vec<u8>>> {
         self.get_bytes(&format!("v1/keys/{epoch:08x}/{name}.k"))
             .await
     }
@@ -454,14 +502,7 @@ impl Mailbox for ServerStore {
         if response.status() == StatusCode::NOT_FOUND {
             return Ok(None);
         }
-        Ok(Some(
-            check(response)
-                .await?
-                .bytes()
-                .await
-                .map_err(StoreError::Network)?
-                .to_vec(),
-        ))
+        Ok(Some(read_body(check(response).await?, MAX_RESPONSE).await?))
     }
 
     async fn close_slot(&self, slot: &str) -> Result<()> {
@@ -484,8 +525,7 @@ async fn check(response: reqwest::Response) -> Result<reqwest::Response> {
         return Ok(response);
     }
     let status = response.status().as_u16();
-    let code = response
-        .json::<Value>()
+    let code = json(response)
         .await
         .ok()
         .and_then(|v| v["error"].as_str().map(str::to_owned));
@@ -511,12 +551,13 @@ pub struct ServerInfo {
     pub live: bool,
 }
 
-pub(super) async fn decode(response: reqwest::Response) -> Result<Value> {
-    check(response)
-        .await?
-        .json()
-        .await
+async fn json(response: reqwest::Response) -> Result<Value> {
+    serde_json::from_slice(&read_body(response, MAX_RESPONSE).await?)
         .map_err(|_| StoreError::Malformed)
+}
+
+pub(super) async fn decode(response: reqwest::Response) -> Result<Value> {
+    json(check(response).await?).await
 }
 
 pub(super) async fn decode_empty(response: reqwest::Response) -> Result<()> {

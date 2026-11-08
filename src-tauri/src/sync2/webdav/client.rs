@@ -10,7 +10,8 @@ use quick_xml::events::Event;
 use reqwest::{Client, Method, RequestBuilder, Response, StatusCode, Url};
 use tokio::sync::Mutex;
 
-use crate::sync2::http::Transport;
+use crate::sync2::envelope::MAX_OBJECT_SIZE;
+use crate::sync2::http::{MAX_RESPONSE, Transport, read_body};
 use crate::sync2::server::{Result, StoreError};
 
 const PROPFIND_BODY: &str = r#"<?xml version="1.0" encoding="utf-8"?><d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/></d:prop></d:propfind>"#;
@@ -52,6 +53,9 @@ impl WebDav {
         if self.refused.load(Ordering::SeqCst) {
             return Err(StoreError::Unauthorized);
         }
+        if !inside_folder(path) {
+            return Err(StoreError::Malformed);
+        }
         let url = self.base.join(path).map_err(|_| StoreError::Malformed)?;
         Ok(self
             .client
@@ -90,6 +94,15 @@ impl WebDav {
         }
         Ok(())
     }
+}
+
+/// Every path this client builds is plain names under the group's folder, so a URL can't resolve
+/// anywhere else on the account.
+fn inside_folder(path: &str) -> bool {
+    let plain = path
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_' | b'/'));
+    plain && !path.starts_with('/') && !path.split('/').any(|part| part == "." || part == "..")
 }
 
 fn refused(response: &Response) -> StoreError {
@@ -149,13 +162,7 @@ impl WebDav {
         let response = self.send(self.request(Method::GET, path)?).await?;
         match response.status() {
             StatusCode::NOT_FOUND => Ok(None),
-            status if status.is_success() => Ok(Some(
-                response
-                    .bytes()
-                    .await
-                    .map_err(StoreError::Network)?
-                    .to_vec(),
-            )),
+            status if status.is_success() => Ok(Some(read_body(response, MAX_OBJECT_SIZE).await?)),
             _ => Err(refused(&response)),
         }
     }
@@ -184,8 +191,8 @@ impl WebDav {
             return Err(refused(&response));
         }
         let folder = self.base.join(dir).map_err(|_| StoreError::Malformed)?;
-        let xml = response.text().await.map_err(StoreError::Network)?;
-        Ok(parse_multistatus(&xml)
+        let xml = read_body(response, MAX_RESPONSE).await?;
+        Ok(parse_multistatus(&String::from_utf8_lossy(&xml))
             .into_iter()
             .filter_map(|(href, is_folder)| {
                 let path = folder.join(&href).ok()?.path().to_owned();
@@ -204,7 +211,26 @@ impl WebDav {
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
+    use crate::sync2::fuzz::mutations;
+
+    const ANSWER: &str = r#"<D:multistatus xmlns:D="DAV:"><D:response><D:href>/x/</D:href>
+<D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop></D:propstat>
+</D:response></D:multistatus>"#;
+
+    proptest! {
+        #[test]
+        fn changed_or_arbitrary_answers_are_read_without_panicking(
+            xml in prop_oneof![
+                any::<String>(),
+                mutations(ANSWER.as_bytes().to_vec()).prop_map(|b| String::from_utf8_lossy(&b).into_owned()),
+            ],
+        ) {
+            let _ = parse_multistatus(&xml);
+        }
+    }
 
     #[test]
     fn reads_a_propfind_answer_with_any_prefix() {
