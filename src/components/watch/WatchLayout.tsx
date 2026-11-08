@@ -35,8 +35,8 @@ export function WatchLayout({ player, metadata, description, comments, sidebar }
         className={cx(
           "mx-auto grid w-full grid-cols-1 items-start gap-x-6 gap-y-5 lg:grid-rows-[auto_1fr]",
           isTheaterMode
-            ? "max-w-full px-0 pt-0 lg:grid-cols-[minmax(0,1fr)_minmax(0,1100px)_400px_minmax(0,1fr)]"
-            : "max-w-[1800px] px-4 pt-4 md:px-6 md:pt-6 lg:grid-cols-[1fr_400px]",
+            ? "max-w-full px-0 pt-0 lg:grid-cols-[minmax(0,1fr)_minmax(0,1100px)_400px_minmax(0,1fr)] xl:grid-cols-[minmax(0,1fr)_minmax(0,1150px)_460px_minmax(0,1fr)] 2xl:grid-cols-[minmax(0,1fr)_minmax(0,1200px)_540px_minmax(0,1fr)]"
+            : "max-w-[2200px] px-4 pt-4 md:px-6 md:pt-6 lg:grid-cols-[1fr_400px] xl:grid-cols-[1fr_460px] 2xl:grid-cols-[1fr_540px]",
         )}
       >
         <div

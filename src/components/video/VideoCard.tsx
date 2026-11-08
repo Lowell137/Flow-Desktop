@@ -169,6 +169,10 @@ function VideoCardComponent({
   const titleClampStyle = getTitleClampStyle(
     useAppSettingsStore((state) => state.values[SETTINGS.VIDEO_TITLE_MAX_LINES])
   );
+  // The narrow side cards need two lines to say anything, whatever the one-line feed setting is.
+  const compactTitleStyle: React.CSSProperties | undefined = titleClampStyle
+    ? { ...titleClampStyle, WebkitLineClamp: Math.max(2, Number(titleClampStyle.WebkitLineClamp) || 2) }
+    : undefined;
 
   // Only resolve via the hook when the feed didn't already supply an avatar —
   // the hook falls back to a getChannelDetails() network fetch per unknown
@@ -562,7 +566,7 @@ function VideoCardComponent({
       >
         <ColorWash active={isHovered} color={dominantColor} alpha={0.2} spread="row" />
         <div
-          className="relative aspect-video w-40 shrink-0 cursor-pointer overflow-hidden rounded-xl bg-surface-container"
+          className="relative aspect-video w-40 shrink-0 cursor-pointer overflow-hidden rounded-xl bg-surface-container xl:w-48 2xl:w-56"
           onClick={play}
           {...tabClickProps}
         >
@@ -596,7 +600,7 @@ function VideoCardComponent({
           <h3
             onClick={play}
           {...tabClickProps}
-            style={titleClampStyle}
+            style={compactTitleStyle}
             className="cursor-pointer text-sm font-medium leading-snug text-chrome-neutral-100 transition-colors group-hover:text-primary"
           >
             {displayTitle}
@@ -616,10 +620,11 @@ function VideoCardComponent({
           <CardPills video={video} />
         </div>
 
-        <div className="relative shrink-0">
+        {/* Out of the row's flow, so the title keeps the width the menu button would take. */}
+        <div className="absolute right-1 top-1">
           <button
             onClick={openMenuFromDots}
-            className="rounded-full p-1 text-chrome-neutral-500 opacity-0 transition duration-150 ease-out hover:bg-chrome-neutral-800 hover:text-chrome-neutral-200 group-hover:opacity-100"
+            className="rounded-full bg-surface-container/80 p-1 text-chrome-neutral-500 opacity-0 transition duration-150 ease-out hover:bg-chrome-neutral-800 hover:text-chrome-neutral-200 group-hover:opacity-100"
           >
             <MoreVertical size={18} />
           </button>

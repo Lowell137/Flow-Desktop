@@ -2,7 +2,6 @@ import React, { useState, useEffect, useLayoutEffect, useRef } from "react";
 import {
   Captions,
   ChevronRight,
-  Expand,
   ListVideo,
   Maximize2,
   MessageSquareText,
@@ -14,7 +13,6 @@ import {
   Settings as SettingsIcon,
   SkipBack,
   SkipForward,
-  Shrink,
   Volume1,
   Volume2,
   VolumeX,
@@ -862,14 +860,36 @@ export const FlowPlayerControls: React.FC<FlowPlayerControlsProps> = ({
               {!isFullscreen && (
                 <button
                   type="button"
-                  title="Theater mode"
+                  title={isTheaterMode ? "Default view (t)" : "Theater mode (t)"}
+                  aria-label="Theater mode"
+                  aria-pressed={isTheaterMode}
                   onClick={() => setIsTheaterMode(!isTheaterMode)}
                   className={cx(
                     "grid h-7 w-7 place-items-center rounded-full hover:bg-chrome-white/10",
                     isTheaterMode && "bg-chrome-white/15"
                   )}
                 >
-                  {isTheaterMode ? <Shrink size={19} /> : <Expand size={19} />}
+                  {/* A wide frame with a pair of arrows: out to enter theater mode, in to leave it. */}
+                  <svg
+                    width="22"
+                    height="22"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden="true"
+                  >
+                    <rect x="2" y="5" width="20" height="14" rx="3" />
+                    <path
+                      d={
+                        isTheaterMode
+                          ? "M7 9.5 9.5 12 7 14.5 M17 9.5 14.5 12 17 14.5"
+                          : "M9.5 9.5 7 12 9.5 14.5 M14.5 9.5 17 12 14.5 14.5"
+                      }
+                    />
+                  </svg>
                 </button>
               )}
               <button
