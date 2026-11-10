@@ -1,9 +1,10 @@
+use crate::api::app_proxy;
 use crate::api::innertube::core::{account, locale, remote_decoder};
 use crate::api::innertube::extractors::audio_preference;
 use crate::commands::linked::err as linked_err;
 use crate::db::settings;
 use crate::db::watch_history::{self, WatchHistoryRecord};
-use crate::errors::ErrorResponse;
+use crate::errors::{AppError, ErrorResponse};
 use crate::sync::error::SyncError;
 use crate::sync::local_edits;
 use crate::sync2::actions::{leave_if_linked, reset_local_data};
@@ -34,6 +35,19 @@ pub async fn get_music_history(
         .map_err(ErrorResponse::from)
 }
 
+/// `watch_history` is a sync collection, and a file on this computer means nothing on a phone.
+fn refuse_local_files(records: &[WatchHistoryRecord]) -> Result<(), ErrorResponse> {
+    if records
+        .iter()
+        .any(|record| crate::local_media::is_local_id(&record.video_id))
+    {
+        return Err(ErrorResponse::from(AppError::Validation(
+            "A local file can't enter watch history".into(),
+        )));
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn add_watch_record(
     app: AppHandle,
@@ -46,9 +60,28 @@ pub async fn add_watch_record(
         youtube_service.account().account_report_watched(&record.video_id).await;
         return Ok(());
     }
+    refuse_local_files(std::slice::from_ref(&record))?;
     watch_history::upsert_watch_record(&pool, &record)
         .await
         .map_err(ErrorResponse::from)?;
+    if edits_sync(&app).await {
+        push_soon(&app);
+    }
+    Ok(())
+}
+
+/// Undo of a removal, which unlike a new watch must beat the deletion it takes back.
+#[tauri::command]
+pub async fn restore_watch_record(
+    app: AppHandle,
+    record: WatchHistoryRecord,
+    pool: State<'_, SqlitePool>,
+) -> Result<(), ErrorResponse> {
+    refuse_local_files(std::slice::from_ref(&record))?;
+    watch_history::upsert_watch_record(&pool, &record)
+        .await
+        .map_err(ErrorResponse::from)?;
+    note_sync_failure(local_edits::stamp_restored_watch(&pool, &record.video_id).await);
     if edits_sync(&app).await {
         push_soon(&app);
     }
@@ -64,6 +97,7 @@ pub async fn add_watch_records_bulk(
     if account::session().is_some() {
         return Ok(());
     }
+    refuse_local_files(&records)?;
     watch_history::upsert_watch_records_bulk(&pool, &records)
         .await
         .map_err(ErrorResponse::from)?;
@@ -87,6 +121,42 @@ pub async fn delete_watch_record(
         push_soon(&app);
     }
     watch_history::delete_watch_record(&pool, &video_id)
+        .await
+        .map_err(ErrorResponse::from)
+}
+
+#[tauri::command]
+pub async fn get_watch_records(
+    video_ids: Vec<String>,
+    pool: State<'_, SqlitePool>,
+) -> Result<Vec<WatchHistoryRecord>, ErrorResponse> {
+    watch_history::get_watch_records(&pool, &video_ids)
+        .await
+        .map_err(ErrorResponse::from)
+}
+
+#[tauri::command]
+pub async fn get_watch_history_years(
+    pool: State<'_, SqlitePool>,
+) -> Result<Vec<i64>, ErrorResponse> {
+    watch_history::watch_history_years(&pool)
+        .await
+        .map_err(ErrorResponse::from)
+}
+
+#[tauri::command]
+pub async fn delete_short_watch_records(
+    app: AppHandle,
+    pool: State<'_, SqlitePool>,
+) -> Result<(), ErrorResponse> {
+    if edits_sync(&app).await {
+        let shorts = watch_history::short_video_ids(&pool)
+            .await
+            .map_err(ErrorResponse::from)?;
+        note_sync_failure(local_edits::record_watch_deletions(&pool, shorts).await);
+        push_soon(&app);
+    }
+    watch_history::delete_short_watch_records(&pool)
         .await
         .map_err(ErrorResponse::from)
 }
@@ -171,13 +241,23 @@ const ACCOUNT_OWNED_SETTINGS: [&str; 6] = [
 ];
 
 /// Settings the backend acts on itself, applied at startup and whenever saved.
-pub(crate) const BACKEND_SETTINGS: [&str; 3] = [
+pub(crate) const BACKEND_SETTINGS: [&str; 10] = [
     remote_decoder::SETTING_KEY,
     audio_preference::STABLE_VOLUME_SETTING,
     locale::CONTENT_LANGUAGE_SETTING,
+    locale::CONTENT_COUNTRY_SETTING,
+    app_proxy::ENABLED_SETTING,
+    app_proxy::TYPE_SETTING,
+    app_proxy::HOST_SETTING,
+    app_proxy::PORT_SETTING,
+    app_proxy::USERNAME_SETTING,
+    app_proxy::PASSWORD_SETTING,
 ];
 
 pub(crate) fn apply_backend_setting(key: &str, value: Option<&str>) {
+    if app_proxy::apply_setting(key, value) {
+        return;
+    }
     let enabled = value.is_some_and(|value| value.eq_ignore_ascii_case("true"));
     if key == remote_decoder::SETTING_KEY {
         remote_decoder::set_enabled(enabled);
@@ -185,6 +265,8 @@ pub(crate) fn apply_backend_setting(key: &str, value: Option<&str>) {
         audio_preference::set_stable_volume(enabled);
     } else if key == locale::CONTENT_LANGUAGE_SETTING {
         locale::set_content_language(value);
+    } else if key == locale::CONTENT_COUNTRY_SETTING {
+        locale::set_content_country(value);
     }
 }
 

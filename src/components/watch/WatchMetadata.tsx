@@ -1,13 +1,15 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ThumbsUp, ThumbsDown, Share2, Bookmark, Download, Check, WandSparkles } from "lucide-react";
+import { ThumbsUp, ThumbsDown, Share2, Bookmark, BookmarkCheck, Download, Check, WandSparkles } from "lucide-react";
 import { Button } from "../ui/Button";
 import { WatchOwner } from "./WatchOwner";
+import { WatchNoteButton } from "../note/WatchNote";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { usePlaylistModalStore } from "../../store/usePlaylistModalStore";
 import { useDownloadStore } from "../../store/useDownloadStore";
 import { useIsDownloaded } from "../../lib/useDownloads";
 import { useVideoReactions } from "../../lib/useVideoReactions";
+import { useVideoSaved } from "../../lib/useVideoSaved";
 import { formatCount } from "../../lib/utils";
 import { shareLink } from "../../lib/clipboard";
 import { useUiStore } from "../../store/useUiStore";
@@ -28,6 +30,7 @@ export function WatchMetadata({
   const openAddToPlaylist = usePlaylistModalStore((s) => s.openAddToPlaylist);
   const openVideoDownload = useDownloadStore((s) => s.openVideo);
   const isDownloaded = useIsDownloaded(currentVideo.id);
+  const isSaved = useVideoSaved(currentVideo.id);
   const reactions = useVideoReactions(currentVideo, videoData);
   const [showingOriginal, setShowingOriginal] = useState(false);
 
@@ -168,13 +171,14 @@ export function WatchMetadata({
             </button>
           </div>
 
+          <WatchNoteButton video={currentVideo} videoData={videoData} />
           <Button variant="tonal" onClick={() => void shareVideo()}>
             <Share2 size={18} />
             {getString("share")}
           </Button>
           <Button variant="tonal" onClick={() => openAddToPlaylist(saveTarget)}>
-            <Bookmark size={18} />
-            {getString("save")}
+            {isSaved ? <BookmarkCheck size={18} /> : <Bookmark size={18} />}
+            {getString(isSaved ? "watch_saved" : "save")}
           </Button>
           <Button variant="tonal" onClick={() => openVideoDownload(saveTarget)}>
             {isDownloaded ? <Check size={18} /> : <Download size={18} />}

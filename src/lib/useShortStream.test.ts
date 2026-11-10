@@ -5,6 +5,7 @@ import {
   pickDirectUrl,
   pickDashRepresentationId,
   selectShortPlaybackSource,
+  shortAudioChoices,
 } from "./useShortStream";
 import { codecRank } from "./codecPreference";
 import type { AudioTrack, StreamInfo, StreamVariant } from "../types/video";
@@ -177,5 +178,28 @@ describe("selectShortPlaybackSource", () => {
       sabr: { available: true, manifestUrl: "sabr", requiresPoToken: true },
     });
     expect(selectShortPlaybackSource(info)).toEqual({ dashUrl: "sabr", videoUrl: null, audioUrl: null });
+  });
+});
+
+describe("Short audio tracks", () => {
+  const track = (id: string, label: string, bitrate: number, isDefault = false) =>
+    ({ id, label, bitrate, isDefault, available: true, localUrl: `u-${id}`, mimeType: 'audio/mp4; codecs="mp4a.40.2"' }) as never;
+  const info = {
+    streamId: "s",
+    localUrl: "",
+    expiresAt: "",
+    variants: [],
+    captions: [],
+    audioTracks: [track("en-lo", "English", 1, true), track("en-hi", "English", 9, true), track("es", "Spanish", 5)],
+  } as never;
+
+  it("offers each language once, at its best bitrate", () => {
+    expect(shortAudioChoices(info).map((t) => t.id)).toEqual(["en-hi", "es"]);
+  });
+
+  it("plays the chosen track and falls back to the default", () => {
+    expect(pickAudioUrl(info, "es")).toBe("u-es");
+    expect(pickAudioUrl(info)).toBe("u-en-hi");
+    expect(pickAudioUrl(info, "gone")).toBe("u-en-hi");
   });
 });

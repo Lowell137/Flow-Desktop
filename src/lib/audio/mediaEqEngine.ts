@@ -1,12 +1,8 @@
 import { logToBackend } from "../diagnostics";
 import { createAudioContext, keepRunning, resumeWithin } from "./audioContext";
 import { EQ_GRAPH_OFF, type EqGraphSpec } from "./eq/graphPlan";
-import { EqChain, RAMP_TIME_CONSTANT } from "./eqChain";
-import { MAX_BOOST } from "./musicAudioEngine";
+import { EqChain } from "./eqChain";
 import { probeMediaElementRouting } from "./webAudioProbe";
-
-/** Where the limiter starts pulling peaks down while a boost is on. */
-const BOOST_LIMIT_DB = -3;
 
 // One context for every video player in this window; each player keeps its own chain.
 let sharedContext: AudioContext | null = null;
@@ -39,7 +35,8 @@ function checkRouting(ctx: AudioContext): Promise<boolean | null> {
 /**
  * The equalizer for one video player: its <video> element and the separate <audio> element
  * adaptive playback uses. Elements are routed through WebAudio only once the equalizer changes
- * the sound, and each gets its source node exactly once in its life, as WebAudio requires.
+ * the sound or the volume goes above 100%, and each gets its source node exactly once in its life,
+ * as WebAudio requires.
  */
 export class MediaEqEngine {
   private chain: EqChain | null = null;
@@ -49,27 +46,10 @@ export class MediaEqEngine {
   private spec: EqGraphSpec = EQ_GRAPH_OFF;
   private eqEngaged = false;
   private boost = 1;
-  private boostGain: GainNode | null = null;
-  private limiter: DynamicsCompressorNode | null = null;
   private routing = false;
 
-  /** Routing is needed once the equalizer changes the sound or the volume is amplified. */
   private get engaged(): boolean {
     return this.eqEngaged || this.boost > 1;
-  }
-
-  /** `factor` of 1 is off; above 1 the video's sound is amplified (and peaks limited). */
-  setBoost(factor: number): void {
-    this.boost = Number.isFinite(factor) ? Math.max(1, Math.min(MAX_BOOST, factor)) : 1;
-    if (this.engaged) void this.route();
-    this.applyBoost();
-  }
-
-  private applyBoost(): void {
-    if (!sharedContext || !this.boostGain || !this.limiter) return;
-    const t = sharedContext.currentTime;
-    this.boostGain.gain.setTargetAtTime(this.boost, t, RAMP_TIME_CONSTANT);
-    this.limiter.threshold.setTargetAtTime(this.boost > 1 ? BOOST_LIMIT_DB : 0, t, RAMP_TIME_CONSTANT);
   }
 
   /** The player's current media elements; an element that left is let go. */
@@ -101,14 +81,16 @@ export class MediaEqEngine {
     this.chain?.apply(spec);
   }
 
+  setBoost(gain: number): void {
+    this.boost = gain;
+    if (this.engaged) void this.route();
+    this.chain?.setBoost(gain);
+  }
+
   dispose(): void {
     this.setElements([]);
     this.chain?.output.disconnect();
-    this.boostGain?.disconnect();
-    this.limiter?.disconnect();
     this.chain = null;
-    this.boostGain = null;
-    this.limiter = null;
   }
 
   private async route(): Promise<void> {
@@ -123,17 +105,9 @@ export class MediaEqEngine {
       if ((await checkRouting(ctx)) !== true || !this.engaged) return;
       if (!this.chain) {
         this.chain = new EqChain(ctx);
-        this.boostGain = ctx.createGain();
-        this.limiter = ctx.createDynamicsCompressor();
-        this.limiter.knee.value = 0;
-        this.limiter.ratio.value = 20;
-        this.limiter.attack.value = 0.003;
-        this.limiter.release.value = 0.1;
-        this.chain.output.connect(this.boostGain);
-        this.boostGain.connect(this.limiter);
-        this.limiter.connect(ctx.destination);
+        this.chain.output.connect(ctx.destination);
         this.chain.apply(this.spec);
-        this.applyBoost();
+        this.chain.setBoost(this.boost);
       }
       for (const el of this.elements) this.connect(ctx, this.chain, el);
     } catch (error) {

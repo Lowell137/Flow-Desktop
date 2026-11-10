@@ -71,15 +71,6 @@ class FakeContext extends EventTarget {
   createWaveShaper() {
     return new FakeShaper();
   }
-  createDynamicsCompressor() {
-    return Object.assign(new FakeNode(), {
-      threshold: new FakeParam(-24),
-      knee: new FakeParam(30),
-      ratio: new FakeParam(12),
-      attack: new FakeParam(0.003),
-      release: new FakeParam(0.25),
-    });
-  }
   createMediaElementSource(el: HTMLMediaElement) {
     this.sources.push(el);
     return new FakeNode();
@@ -257,19 +248,40 @@ describe("crossfade without WebAudio", () => {
     expect(pair[1].volume).toBe(1);
     expect(pair[0].getAttribute("src")).toBeNull();
   });
-});
 
-describe("volume boost", () => {
-  it("brings the graph in and amplifies past the slider", () => {
-    const el = document.createElement("audio");
-    const el2 = document.createElement("audio");
-    musicAudioEngine.attach([el, el2]);
-    Object.defineProperty(el, "paused", { value: false, configurable: true });
-    musicAudioEngine.setVolume(1);
-    musicAudioEngine.setBoost(2);
-    const ctx = contexts[contexts.length - 1]!;
-    const master = ctx.gains.find((g) => g.gain.setTargetAtTime.mock.calls.some((c) => c[0] === 2));
-    expect(master).toBeDefined();
-    musicAudioEngine.setBoost(1);
+  async function fadingEngine() {
+    vi.useFakeTimers();
+    vi.stubGlobal("AudioContext", undefined);
+    vi.resetModules();
+    const { musicAudioEngine: engine } = await import("./musicAudioEngine");
+    const pair = elements();
+    engine.attach(pair);
+    engine.setCrossfadeEnabled(true);
+    await engine.load("http://127.0.0.1/stream/a", null);
+    engine.preload("b", "http://127.0.0.1/stream/b", null, null);
+    Object.defineProperty(pair[1], "readyState", { value: HTMLMediaElement.HAVE_FUTURE_DATA, configurable: true });
+    Object.defineProperty(pair[0], "paused", { value: false, configurable: true });
+    engine.armCrossfade(2);
+    engine.activatePreloaded("b");
+    return { engine, pair };
+  }
+
+  it("buffers a song asked for during a fade once the fade has run its course", async () => {
+    const { engine, pair } = await fadingEngine();
+    engine.preload("c", "http://127.0.0.1/stream/c", null, null);
+    expect(engine.hasPreloaded("c")).toBe(false);
+    expect(pair[0].getAttribute("src")).toBe("http://127.0.0.1/stream/a");
+    await vi.advanceTimersByTimeAsync(2_200);
+    expect(engine.hasPreloaded("c")).toBe(true);
+    expect(pair[0].getAttribute("src")).toBe("http://127.0.0.1/stream/c");
+  });
+
+  it("forgets that song if the queue changes before the fade ends", async () => {
+    const { engine, pair } = await fadingEngine();
+    engine.preload("c", "http://127.0.0.1/stream/c", null, null);
+    engine.clearPreload();
+    await vi.advanceTimersByTimeAsync(2_200);
+    expect(engine.hasPreloaded("c")).toBe(false);
+    expect(pair[0].getAttribute("src")).toBeNull();
   });
 });

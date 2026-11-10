@@ -1,12 +1,15 @@
 import React, { useCallback, useLayoutEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { BellOff, BellRing, Check, ChevronDown, UserMinus } from "lucide-react";
+import { BellOff, BellRing, Check, ChevronDown, Eye, EyeOff, FolderPlus, UserMinus } from "lucide-react";
 import { Button } from "./Button";
 import { AnchoredPortalMenu, type MenuAnchor } from "./AnchoredPortalMenu";
 import { useSubscriptionStore } from "../../store/useSubscriptionStore";
 import { useNotificationStore } from "../../store/useNotificationStore";
 import { useAppSettingsStore } from "../../store/useAppSettingsStore";
 import { useUiStore } from "../../store/useUiStore";
+import { useChannelShortsStore } from "../../store/useChannelShortsStore";
+import { useShortsEnabled } from "../../lib/useShortsContent";
+import { AddToGroupDialog } from "../subscriptions/AddToGroupDialog";
 import { SETTINGS } from "../../lib/settings/schema";
 import { MOTION_EASE, motionMs } from "../../lib/motion";
 import { getString } from "../../lib/i18n/index";
@@ -59,6 +62,10 @@ export function SubscribeButton({
   );
   const allNotificationsOn = useAppSettingsStore((state) => state.values[SETTINGS.NOTIFICATIONS_ENABLED] !== "false");
   const notificationsOn = channelNotificationsOn && allNotificationsOn;
+  const cleanId = cleanChannelId(channelId);
+  const shortsEnabled = useShortsEnabled();
+  const shortsExcluded = useChannelShortsStore((state) => state.excluded.has(cleanId));
+  const [groupsOpen, setGroupsOpen] = useState(false);
 
   const boxRef = useRef<HTMLDivElement>(null);
   const [anchor, setAnchor] = useState<MenuAnchor | null>(null);
@@ -128,6 +135,7 @@ export function SubscribeButton({
       closeMenu();
       return;
     }
+    void useChannelShortsStore.getState().load();
     const rect = boxRef.current?.getBoundingClientRect();
     if (rect) setAnchor({ top: rect.bottom + 8, right: rect.right });
   };
@@ -153,7 +161,7 @@ export function SubscribeButton({
                 {notificationsOn ? <BellRing size={16} /> : <BellOff size={16} />}
               </span>
               {getString("subscribed")}
-              {showNotificationMenu && <ChevronDown size={16} className="-mr-2 text-chrome-neutral-400" />}
+              {showNotificationMenu && <ChevronDown size={16} className="-me-2 text-chrome-neutral-400" />}
             </>
           ) : (
             getString("search_subscribe")
@@ -199,7 +207,7 @@ export function SubscribeButton({
                 onClick={(event) => {
                   event.stopPropagation();
                   closeMenu();
-                  navigate("/settings", { state: { settingsCategory: "content" } });
+                  navigate("/settings", { state: { settingsCategory: "subscriptions" } });
                 }}
                 className="font-medium text-chrome-neutral-200 underline underline-offset-2 transition-colors duration-200 ease-out hover:text-chrome-neutral-100"
               >
@@ -207,6 +215,27 @@ export function SubscribeButton({
               </button>
             </div>
           )}
+
+          <div className="my-1.5 h-px bg-chrome-neutral-800" />
+
+          {shortsEnabled && (
+            <MenuRow
+              icon={shortsExcluded ? <Eye size={16} /> : <EyeOff size={16} />}
+              label={getString(shortsExcluded ? "show_channel_shorts" : "hide_channel_shorts")}
+              onSelect={() => {
+                void useChannelShortsStore.getState().toggle(cleanId);
+                closeMenu();
+              }}
+            />
+          )}
+          <MenuRow
+            icon={<FolderPlus size={16} />}
+            label={getString("channel_add_to_group")}
+            onSelect={() => {
+              closeMenu();
+              setGroupsOpen(true);
+            }}
+          />
 
           <div className="my-1.5 h-px bg-chrome-neutral-800" />
 
@@ -220,6 +249,10 @@ export function SubscribeButton({
             }}
           />
         </AnchoredPortalMenu>
+      )}
+
+      {groupsOpen && (
+        <AddToGroupDialog channelId={cleanId} channelName={channelName} onClose={() => setGroupsOpen(false)} />
       )}
     </div>
   );
@@ -245,7 +278,7 @@ function MenuRow({
         event.stopPropagation();
         onSelect();
       }}
-      className={`flex w-full items-center gap-3 px-3.5 py-2.5 text-left text-sm transition-colors duration-200 ease-out ${
+      className={`flex w-full items-center gap-3 px-3.5 py-2.5 text-start text-sm transition-colors duration-200 ease-out ${
         destructive
           ? "text-chrome-red-400 hover:bg-chrome-red-950/30"
           : "text-chrome-zinc-300 hover:bg-chrome-zinc-800 hover:text-chrome-zinc-100"

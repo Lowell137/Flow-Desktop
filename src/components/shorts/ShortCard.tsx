@@ -12,11 +12,10 @@ import {
 } from "lucide-react";
 import type { MenuAnchor } from "../ui/AnchoredPortalMenu";
 import { MediaMenu } from "../ui/MediaMenu";
-import { useAppSettingsStore } from "../../store/useAppSettingsStore";
+import { useDownloadStore } from "../../store/useDownloadStore";
 import { useFeedActionsStore } from "../../store/useFeedActionsStore";
 import { useUiStore } from "../../store/useUiStore";
 import { showSaveFailedToast, showSaveToast } from "../../lib/saveToast";
-import { SETTINGS } from "../../lib/settings/schema";
 import { buildShortQueue, shortSummaryToItem } from "../../lib/shortsQueue";
 import { prefetchStreamInfo } from "../../lib/streamResolution";
 import {
@@ -24,6 +23,7 @@ import {
   removeShortFromLibrary,
   saveShortToLibrary,
 } from "../../lib/savedShortsLibrary";
+import { dontRecommendLabel } from "../../lib/dontRecommendLabel";
 import { getString } from "../../lib/i18n/index";
 import { youtubeShortsUrl } from "../../lib/youtubeUrl";
 import { copyText } from "../../lib/clipboard";
@@ -32,14 +32,17 @@ import type { ShortVideoSummary, VideoSummary } from "../../types/video";
 import { backgroundTabClickProps, openedInBackgroundTab } from "../../lib/openTarget";
 import { openActions } from "../common/openActions";
 import { useOriginalTitle } from "../../lib/useOriginalTitle";
+import { useShortsPlayerDisabled } from "../../lib/useShortsContent";
 
 interface ShortCardProps {
   short: ShortVideoSummary;
   queue: ShortVideoSummary[];
   variant?: "shelf" | "grid";
+  /** The player stops at the end of `queue` instead of continuing into the feed: Saved Shorts. */
+  finiteQueue?: boolean;
 }
 
-export function ShortCard({ short, queue, variant = "grid" }: ShortCardProps) {
+export function ShortCard({ short, queue, variant = "grid", finiteQueue = false }: ShortCardProps) {
   const navigate = useNavigate();
   const toSrc = useProxyImageSrc();
   const showToast = useUiStore((s) => s.showToast);
@@ -47,12 +50,10 @@ export function ShortCard({ short, queue, variant = "grid" }: ShortCardProps) {
   const blockChannelAction = useFeedActionsStore((s) => s.blockChannel);
   const [menuAnchor, setMenuAnchor] = useState<MenuAnchor | null>(null);
   const [savedToLibrary, setSavedToLibrary] = useState(false);
-  const disableShortsPlayer = useAppSettingsStore(
-    (state) => state.values[SETTINGS.DISABLE_SHORTS_PLAYER] === "true",
-  );
+  const disableShortsPlayer = useShortsPlayerDisabled();
   const cardRef = useRef<HTMLDivElement>(null);
   const originalTitle = useOriginalTitle(short.id, cardRef);
-  const title = originalTitle || short.title?.trim() || "Short";
+  const title = originalTitle || short.title?.trim() || getString('shorts_short');
   const video = useMemo<VideoSummary>(
     () => ({
       id: short.id,
@@ -97,7 +98,7 @@ export function ShortCard({ short, queue, variant = "grid" }: ShortCardProps) {
       state: {
         initialShort: shortSummaryToItem(short),
         initialQueue: buildShortQueue(queue),
-        queueOnly: true,
+        queueEnd: finiteQueue ? "stop" : "feed",
       },
     });
   };
@@ -175,7 +176,7 @@ export function ShortCard({ short, queue, variant = "grid" }: ShortCardProps) {
 
   const downloadShort = () => {
     setMenuAnchor(null);
-    showToast({ variant: "info", message: getString("shorts_download_coming_soon") });
+    useDownloadStore.getState().openVideo(video);
   };
 
   const isShelf = variant === "shelf";
@@ -272,14 +273,16 @@ export function ShortCard({ short, queue, variant = "grid" }: ShortCardProps) {
               label: getString("shorts_menu_not_interested"),
               icon: <Ban size={16} />,
               group: "feed",
+              danger: true,
               onSelect: notInterested,
             },
             ...(short.channelId
               ? [{
                 id: "block-channel",
-                label: getString("shorts_menu_dont_recommend_channel"),
+                label: dontRecommendLabel(short.channelName),
                 icon: <EyeOff size={16} />,
                 group: "feed" as const,
+                danger: true,
                 onSelect: dontRecommendChannel,
               }]
               : []),

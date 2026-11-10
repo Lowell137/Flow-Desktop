@@ -7,14 +7,17 @@ import {
   ChevronRight,
   Gauge,
   Monitor,
+  Scaling,
   Pause,
   Sliders,
   SlidersHorizontal,
   SunDim,
 } from "lucide-react";
-import type { PlaybackRate } from "../../store/usePlayerStore";
+import { usePlayerStore, type PlaybackRate } from "../../store/usePlayerStore";
 import type { AudioTrack, CaptionTrack, StreamVariant } from "../../types/video";
 import { SubtitleCustomizer } from "./SubtitleCustomizer";
+import { AddSubtitleFileRow, RemoveSubtitleFileButton, SubtitleTimingRow } from "./SubtitleFilesRows";
+import { isLocalCaption, localCaptionPath } from "../../lib/captionText";
 import { useBoolPref } from "../../lib/usePreference";
 import { IS_MAIN_WINDOW } from "../../lib/appWindow";
 import { AmbientModeIcon } from "../ui/AmbientModeIcon";
@@ -29,6 +32,7 @@ import { videoCodecLabel } from "../../lib/settings/playerRuntime";
 import { getString } from "../../lib/i18n/index";
 import { MOTION_EASE, motionMs } from "../../lib/motion";
 import { PLAYER_MENU_ATTR } from "../../lib/playerMenuDismiss";
+import { VIDEO_FIT_LABELS, VIDEO_FITS } from "../../lib/videoFit";
 
 export type SettingsPane =
   | "root"
@@ -38,7 +42,8 @@ export type SettingsPane =
   | "captions-translate"
   | "captions-customize"
   | "audio"
-  | "sleep";
+  | "sleep"
+  | "resize";
 
 // How deep a pane sits, so going deeper slides in from the right and going back from the left.
 const PANE_DEPTH: Record<SettingsPane, number> = {
@@ -48,6 +53,7 @@ const PANE_DEPTH: Record<SettingsPane, number> = {
   captions: 1,
   audio: 1,
   sleep: 1,
+  resize: 1,
   "captions-translate": 2,
   "captions-customize": 2,
 };
@@ -61,6 +67,7 @@ const PANE_TITLE = {
   "captions-customize": "player_menu_subtitle_style",
   audio: "player_menu_audio",
   sleep: "sleep_timer",
+  resize: "player_menu_resize",
 } as const satisfies Record<Exclude<SettingsPane, "root">, string>;
 
 const ROW = "flex min-h-10 w-full items-center justify-between gap-3 rounded-lg px-3 py-2 text-left text-sm font-medium transition-colors duration-200 ease-out";
@@ -129,6 +136,8 @@ export function PlayerSettingsMenu({
   const eqActive = useEqActive();
   const eqEditorHosted = useEqStore((s) => s.editorHosted);
   const openEqEditor = useEqStore((s) => s.setEditorOpen);
+  const videoFit = usePlayerStore((s) => s.videoFit);
+  const setVideoFit = usePlayerStore((s) => s.setVideoFit);
   const [ambientMode, setAmbientMode] = useBoolPref(SETTINGS.AMBIENT_MODE_ENABLED);
   const [ambientGlow, setAmbientGlow] = useBoolPref(SETTINGS.AMBIENT_GLOW_ENABLED);
 
@@ -252,22 +261,6 @@ export function PlayerSettingsMenu({
         {pane === "root" && (
           <div className="space-y-0.5">
             {settingRow(getString("player_menu_speed"), speedLabel(playbackRate), <Gauge size={18} />, () => onPaneChange("speed"))}
-            {/* The pop-out draws no glow, and its settings copy never reaches the main window. */}
-            {IS_MAIN_WINDOW &&
-              toggleRow(
-                getString("settings_ambient_mode"),
-                ambientMode,
-                <AmbientModeIcon size={18} />,
-                setAmbientMode,
-              )}
-            {IS_MAIN_WINDOW &&
-              ambientMode &&
-              toggleRow(
-                getString("settings_ambient_glow"),
-                ambientGlow,
-                <SunDim size={18} />,
-                setAmbientGlow,
-              )}
             {settingRow(
               getString("player_menu_quality"),
               qualityLabel(selectedQualityId, qualities, activeQualityLabel),
@@ -292,6 +285,7 @@ export function PlayerSettingsMenu({
               <AudioLines size={18} />,
               () => onPaneChange("audio"),
             )}
+            {settingRow(getString("player_menu_resize"), getString(VIDEO_FIT_LABELS[videoFit]), <Scaling size={18} />, () => onPaneChange("resize"))}
             {settingRow(getString("sleep_timer"), <SleepTimerLabel />, <Pause size={18} />, () => onPaneChange("sleep"))}
             {eqEditorHosted &&
               settingRow(
@@ -303,6 +297,22 @@ export function PlayerSettingsMenu({
                   onClose();
                   openEqEditor(true);
                 },
+              )}
+            {/* The pop-out draws no glow, and its settings copy never reaches the main window. */}
+            {IS_MAIN_WINDOW &&
+              toggleRow(
+                getString("settings_ambient_mode"),
+                ambientMode,
+                <AmbientModeIcon size={18} />,
+                setAmbientMode,
+              )}
+            {IS_MAIN_WINDOW &&
+              ambientMode &&
+              toggleRow(
+                getString("settings_ambient_glow"),
+                ambientGlow,
+                <SunDim size={18} />,
+                setAmbientGlow,
               )}
           </div>
         )}
@@ -396,22 +406,24 @@ export function PlayerSettingsMenu({
               {check(selectedCaptionId === "off")}
             </button>
             {nativeCaptions.map((caption) => (
-              <button
-                key={caption.id}
-                type="button"
-                onClick={() => pick(() => setSelectedCaptionId(caption.id))}
-                className={cx(ROW, "hover:bg-chrome-white/10")}
-              >
-                <span>
-                  {caption.label}
-                  {caption.isAutoGenerated && (
-                    <span className="ml-1 text-xs font-normal text-chrome-zinc-400">
-                      {getString("player_menu_subtitles_auto")}
-                    </span>
-                  )}
-                </span>
-                {check(selectedCaptionId === caption.id)}
-              </button>
+              <div key={caption.id} className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => pick(() => setSelectedCaptionId(caption.id))}
+                  className={cx(ROW, "min-w-0 flex-1 hover:bg-chrome-white/10")}
+                >
+                  <span className="min-w-0 truncate">
+                    {caption.label}
+                    {caption.isAutoGenerated && (
+                      <span className="ml-1 text-xs font-normal text-chrome-zinc-400">
+                        {getString("player_menu_subtitles_auto")}
+                      </span>
+                    )}
+                  </span>
+                  {check(selectedCaptionId === caption.id)}
+                </button>
+                {isLocalCaption(caption) && <RemoveSubtitleFileButton path={localCaptionPath(caption)} />}
+              </div>
             ))}
             {translatedCaptions.length > 0 && (
               <button
@@ -426,6 +438,8 @@ export function PlayerSettingsMenu({
                 </span>
               </button>
             )}
+            <AddSubtitleFileRow rowClass={cx(ROW, "hover:bg-chrome-white/10")} />
+            {selectedCaptionId !== "off" && <SubtitleTimingRow />}
           </div>
         )}
 
@@ -484,6 +498,22 @@ export function PlayerSettingsMenu({
                 );
               })
             )}
+          </div>
+        )}
+
+        {pane === "resize" && (
+          <div className={LIST}>
+            {VIDEO_FITS.map((fit) => (
+              <button
+                key={fit}
+                type="button"
+                onClick={() => pick(() => setVideoFit(fit))}
+                className={cx(ROW, "hover:bg-chrome-white/10")}
+              >
+                <span>{getString(VIDEO_FIT_LABELS[fit])}</span>
+                {check(videoFit === fit)}
+              </button>
+            ))}
           </div>
         )}
 

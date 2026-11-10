@@ -18,7 +18,7 @@ pub async fn read_body(mut response: Response, limit: usize) -> Result<Vec<u8>> 
     let mut body = Vec::new();
     while let Some(chunk) = response.chunk().await.map_err(StoreError::Network)? {
         if body.len() + chunk.len() > limit {
-            return Err(StoreError::Malformed);
+            return Err(StoreError::TooLarge);
         }
         body.extend_from_slice(&chunk);
     }
@@ -82,7 +82,7 @@ impl Transport {
     }
 
     pub fn builder(&self) -> ClientBuilder {
-        let builder = Client::builder()
+        let builder = crate::api::app_proxy::with_app_proxy(Client::builder())
             .tls_backend_rustls()
             .redirect(redirect::Policy::none())
             .user_agent(concat!("FlowDesktop/", env!("CARGO_PKG_VERSION")))

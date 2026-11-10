@@ -1,8 +1,11 @@
 import { create } from "zustand";
+import { isLocalMediaId } from "../lib/localMediaId";
 import { getSetting, setSetting } from "../lib/api/db";
 import { readAccountCache, writeAccountCache } from "../lib/accountCache";
 import { getAccountFeed, getAccountMusic, isSignedIn, setAccountLike } from "../lib/api/account";
 import { getMusicQueue } from "../lib/api/music";
+import { autoDownloadLikedSong } from "../lib/autoDownload";
+import { recapLikedSong } from "../lib/recap/musicSession";
 import type { SongItem } from "../types/music";
 import type { VideoSummary } from "../types/video";
 
@@ -60,6 +63,10 @@ interface LikesState {
   toggleVideo: (video: VideoSummary) => Promise<boolean>;
   toggleSong: (song: SongItem) => Promise<boolean>;
   remove: (kind: LikedItemKind, id: string) => Promise<void>;
+  /** Unlikes several in one write and returns them for Undo; nothing changes if the write fails. */
+  removeMany: (items: LikedItem[]) => Promise<LikedItem[]>;
+  /** Puts unliked items back as they were, keeping when each was liked. */
+  restore: (items: LikedItem[]) => Promise<void>;
   clear: () => Promise<void>;
 }
 
@@ -160,6 +167,7 @@ export const useLikesStore = create<LikesState>((set, get) => ({
   },
 
   toggleVideo: async (video) => {
+    if (isLocalMediaId(video.id)) return false;
     await get().load();
     const key = itemKey("video", video.id);
     const exists = get().items.some((item) => itemKey(item.kind, item.id) === key);
@@ -181,6 +189,7 @@ export const useLikesStore = create<LikesState>((set, get) => ({
   },
 
   toggleSong: async (song) => {
+    if (isLocalMediaId(song.videoId ?? song.id)) return false;
     await get().load();
     const id = songId(song);
     const key = itemKey("music", id);
@@ -199,6 +208,10 @@ export const useLikesStore = create<LikesState>((set, get) => ({
         ];
     set({ items: normalizeItems(next) });
     await persist(next);
+    if (!exists) {
+      void autoDownloadLikedSong(song);
+      recapLikedSong(song);
+    }
     return !exists;
   },
 
@@ -209,6 +222,36 @@ export const useLikesStore = create<LikesState>((set, get) => ({
     const next = get().items.filter((item) => itemKey(item.kind, item.id) !== key);
     set({ items: normalizeItems(next) });
     await persist(next);
+  },
+
+  removeMany: async (items) => {
+    await get().load();
+    const keys = new Set(items.map((item) => itemKey(item.kind, item.id)));
+    const previous = get().items;
+    const removed = previous.filter((item) => keys.has(itemKey(item.kind, item.id)));
+    const next = previous.filter((item) => !keys.has(itemKey(item.kind, item.id)));
+    set({ items: next });
+    try {
+      await persist(next);
+    } catch (error) {
+      set({ items: previous });
+      throw error;
+    }
+    return removed;
+  },
+
+  restore: async (items) => {
+    await get().load();
+    const previous = get().items;
+    const held = new Set(previous.map((item) => itemKey(item.kind, item.id)));
+    const next = normalizeItems([...previous, ...items.filter((item) => !held.has(itemKey(item.kind, item.id)))]);
+    set({ items: next });
+    try {
+      await persist(next);
+    } catch (error) {
+      set({ items: previous });
+      throw error;
+    }
   },
 
   clear: async () => {
