@@ -1,0 +1,75 @@
+name: Fork release (Windows)
+
+# Fork-only. Every push to main builds the Windows installer and publishes it as a
+# pre-release. Tags are `fork-<run number>`, not `v*`, so upstream's tag-driven
+# release.yml (which needs a tag equal to the package version and signing secrets)
+# is not triggered.
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: fork-release-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    name: Build and publish Windows installer
+    runs-on: windows-2025
+    timeout-minutes: 90
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build data
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          shared-key: fork-release-windows
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      # tauri.local.conf.json turns updater artifacts off, so no signing key is needed.
+      - name: Build NSIS installer
+        shell: bash
+        env:
+          LASTFM_API_KEY: ${{ secrets.LASTFM_API_KEY }}
+          LASTFM_API_SECRET: ${{ secrets.LASTFM_API_SECRET }}
+        run: pnpm tauri build --config src-tauri/tauri.local.conf.json --bundles nsis
+
+      - name: Publish release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          short="${GITHUB_SHA::7}"
+          tag="fork-${GITHUB_RUN_NUMBER}"
+          src="$(ls src-tauri/target/release/bundle/nsis/*.exe | head -n1)"
+          asset="Flow_${version}_${short}_x64-setup.exe"
+          cp "$src" "$asset"
+          subject="$(git log -1 --format=%s)"
+          gh release create "$tag" "$asset" \
+            --target "$GITHUB_SHA" \
+            --prerelease \
+            --latest=false \
+            --title "Flow ${version} (fork build ${GITHUB_RUN_NUMBER}, ${short})" \
+            --notes "Automatic Windows build of ${short}: ${subject}"
