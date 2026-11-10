@@ -2,11 +2,14 @@ import {
   Check,
   Download,
   Link2,
+  ListMusic,
   ListPlus,
   Loader2,
   MoreVertical,
+  Pencil,
   Play,
   Plus,
+  Save,
   Shuffle,
   Trash2,
 } from "lucide-react";
@@ -33,6 +36,10 @@ interface PlaylistAmbientHeaderProps {
   onCopyLink?: () => void;
   onSaveToLibrary?: () => void;
   onRemoveFromLibrary?: () => void;
+  onEdit?: () => void;
+  onAddAll?: () => void;
+  onExport?: () => void;
+  hidesUnavailable?: boolean;
   isSaved?: boolean;
   isProtected?: boolean;
   isOwned?: boolean;
@@ -83,6 +90,10 @@ export function PlaylistAmbientHeader({
   onCopyLink,
   onSaveToLibrary,
   onRemoveFromLibrary,
+  onEdit,
+  onAddAll,
+  onExport,
+  hidesUnavailable = false,
   isSaved = false,
   isProtected = false,
   isOwned = false,
@@ -113,8 +124,11 @@ export function PlaylistAmbientHeader({
   const canCopyLink = !isProtected && Boolean(onCopyLink);
   const canSave = !isProtected && !isSaved && Boolean(onSaveToLibrary);
   const canRemove = !isProtected && isSaved && Boolean(onRemoveFromLibrary);
-  const showMenuDivider = (canAddToQueue || canCopyLink) && (canSave || canRemove);
-  const hasMenuItems = canAddToQueue || canCopyLink || canSave || canRemove;
+  const canEdit = isOwned && Boolean(onEdit);
+  const canAddAll = canPlay && Boolean(onAddAll);
+  const canExport = canPlay && Boolean(onExport);
+  const showMenuDivider = (canEdit || canAddToQueue || canAddAll || canExport || canCopyLink) && (canSave || canRemove);
+  const hasMenuItems = canEdit || canAddToQueue || canAddAll || canExport || canCopyLink || canSave || canRemove;
 
   const statsParts = [
     meta.videoCountText,
@@ -176,6 +190,16 @@ export function PlaylistAmbientHeader({
                 {statsParts.join(" • ")}
               </p>
             ) : null}
+            {isOwned && meta.description ? (
+              <p className="mt-2 line-clamp-3 whitespace-pre-line text-sm text-chrome-neutral-300">
+                {meta.description}
+              </p>
+            ) : null}
+            {hidesUnavailable ? (
+              <p className="mt-2 text-xs text-chrome-neutral-400">
+                {getString("playlist_unavailable_hidden")}
+              </p>
+            ) : null}
           </div>
 
           <div className="flex shrink-0 items-center gap-2">
@@ -200,7 +224,7 @@ export function PlaylistAmbientHeader({
               )}
             </IconButton>
             <IconButton
-              aria-label="Playlist menu"
+              aria-label={getString('playlist_playlist_menu')}
               onClick={toggleMenu}
               disabled={!hasMenuItems}
             >
@@ -214,17 +238,38 @@ export function PlaylistAmbientHeader({
               onClose={() => setMenuAnchor(null)}
               className="z-50 w-56 rounded-xl border border-chrome-neutral-800 bg-surface-container-high py-1.5"
             >
+              {canEdit && (
+                <PlaylistMenuItem
+                  icon={<Pencil size={16} />}
+                  label={getString("playlist_edit")}
+                  onClick={() => runAction(onEdit)}
+                />
+              )}
               {canAddToQueue && (
                 <PlaylistMenuItem
                   icon={<ListPlus size={16} />}
-                  label="Add to queue"
+                  label={getString('music_add_to_queue')}
                   onClick={() => runAction(onAddToQueue)}
+                />
+              )}
+              {canAddAll && (
+                <PlaylistMenuItem
+                  icon={<ListMusic size={16} />}
+                  label={getString(isOwned ? "playlist_merge" : "playlist_add_all")}
+                  onClick={() => runAction(onAddAll)}
+                />
+              )}
+              {canExport && (
+                <PlaylistMenuItem
+                  icon={<Save size={16} />}
+                  label={getString("playlist_export")}
+                  onClick={() => runAction(onExport)}
                 />
               )}
               {canCopyLink && (
                 <PlaylistMenuItem
                   icon={<Link2 size={16} />}
-                  label="Copy link"
+                  label={getString('shorts_menu_copy_link')}
                   onClick={() => runAction(onCopyLink)}
                 />
               )}
@@ -234,7 +279,7 @@ export function PlaylistAmbientHeader({
               {canSave && (
                 <PlaylistMenuItem
                   icon={<Plus size={16} />}
-                  label="Save to library"
+                  label={getString('shorts_menu_save_to_library')}
                   onClick={() => runAction(onSaveToLibrary)}
                 />
               )}

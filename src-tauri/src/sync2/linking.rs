@@ -20,7 +20,8 @@ use super::keys::{MemberSecrets, member_id};
 use super::lan_peers::service_port;
 use super::mailbox::Mailbox;
 use super::meta::seal_device_meta;
-use super::pairing::{pairing_aad, pairing_keys, pairing_slot};
+use super::pairing::{pairing_aad, pairing_commit, pairing_keys, pairing_proof, pairing_slot};
+use super::paths::kc_name;
 use super::payload::{decode_payload, encode_payload};
 use super::pipe::{AnyPipe, KEY_SIZE, MailboxPipe, Pipe, dial};
 use super::roster::{
@@ -102,9 +103,11 @@ struct Channel<P> {
 }
 
 impl<P: Pipe> Channel<P> {
-    /// The side that showed `offer`, once the scanner's key arrived. Returns the six digits too.
-    fn shower(pipe: P, offer: &Offer, scanner: &[u8; KEY_SIZE]) -> Result<(Self, String)> {
+    /// The side that showed `offer`, once a scanner proved it read the code: reveals this side's
+    /// key, which takes the offer, so it happens once. Returns the six digits too.
+    async fn shower(mut pipe: P, offer: Offer, scanner: &[u8; KEY_SIZE]) -> Result<(Self, String)> {
         let keys = pairing_keys(&offer.secret, scanner, &offer.token, &offer.public, scanner)?;
+        pipe.send(offer.public.to_vec()).await?;
         let channel = Self {
             pipe,
             token: offer.token,
@@ -115,13 +118,19 @@ impl<P: Pipe> Channel<P> {
         Ok((channel, keys.sas))
     }
 
-    /// The side that read `code`: sends its key first.
+    /// The side that read `code`: sends its key, then holds the shower's key to the code. A key
+    /// that doesn't match ends pairing the way different digits do.
     async fn scanner(mut pipe: P, code: &Code) -> Result<(Self, String)> {
-        let (token, shower) = (code.token()?, code.shower_key()?);
+        let (token, commitment) = (code.token()?, code.commitment()?);
         let secret = random_bytes::<KEY_SIZE>();
         let public = agreement_public_key(&secret);
+        pipe.send([&public[..], &pairing_proof(&token, &public)[..]].concat())
+            .await?;
+        let shower = pipe.receive().await?;
+        if pairing_commit(&shower) != commitment {
+            return Err(EngineError::Declined);
+        }
         let keys = pairing_keys(&secret, &shower, &token, &shower, &public)?;
-        pipe.send_key(public).await?;
         let channel = Self {
             pipe,
             token,
@@ -182,15 +191,18 @@ where
     let mut mailbox = MailboxPipe::new(session.store(), slot.clone(), true);
     let first = match offer.listening.take() {
         Some(listening) => tokio::select! {
-            key = mailbox.receive_key() => key.map(|key| (None, key)),
-            lan = listening.accept() => lan.map(|(pipe, key)| (Some(pipe), key)),
+            key = mailbox.first_message(&offer.token) => key.map(|key| (None, key)),
+            lan = listening.accept(&offer.token) => lan.map(|(pipe, key)| (Some(pipe), key)),
         },
-        None => mailbox.receive_key().await.map(|key| (None, key)),
+        None => mailbox
+            .first_message(&offer.token)
+            .await
+            .map(|key| (None, key)),
     };
     let result = match first {
         Ok((lan, key)) => {
             let pipe = lan.map_or(AnyPipe::Mailbox(mailbox), |lan| AnyPipe::Lan(Box::new(lan)));
-            match Channel::shower(pipe, &offer, &key) {
+            match Channel::shower(pipe, offer, &key).await {
                 Ok((channel, sas)) => {
                     member_side(session, channel, sas, device, store, confirm).await
                 }
@@ -263,6 +275,7 @@ where
         signer: hex::encode(device.did),
         add: Some(vec![member_subject(&sig_public, &kem_public, Role::Device)]),
         remove: None,
+        cut: None,
         epoch: None,
         meta: Some(BTreeMap::from([(
             hex::encode(did),
@@ -309,11 +322,12 @@ where
         group: record.group_id.clone(),
         head: after.head,
         seq: after.seq,
+        // Without a synced Default here, the new device's Default starts a link of its own.
         link: session
             .reading()
             .welcome
             .clone()
-            .ok_or(EngineError::LastProfile)?,
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
         store,
         entries,
         wrap,
@@ -418,7 +432,8 @@ where
     })
 }
 
-/// Checks that `roster` reaches the head the member named and lists this device.
+/// Checks that `roster` is the named group's, reaches the head the member named and lists this
+/// device.
 fn check_pinned(roster: &[Entry], welcome: &Welcome, me: &Subject) -> Result<RosterState> {
     let pinned = roster
         .iter()
@@ -426,6 +441,9 @@ fn check_pinned(roster: &[Entry], welcome: &Welcome, me: &Subject) -> Result<Ros
         .map(|end| replay_roster(&roster[..=end]))
         .transpose()?;
     let state = replay_roster(roster)?;
+    if state.group != welcome.group {
+        return Err(Error::Group.into());
+    }
     if pinned.is_none_or(|pinned| pinned.head != welcome.head)
         || !state.members.contains_key(&me.did)
     {
@@ -485,7 +503,11 @@ pub async fn finish_lan_join<P: Pipe>(
         return Err(EngineError::Unexpected);
     };
     let state = check_pinned(roster, &welcome, &me)?;
-    let group: [u8; 16] = array(&hex::decode(&welcome.group).map_err(|_| Error::Group)?);
+    let group: [u8; 16] = hex::decode(&welcome.group)
+        .ok()
+        .filter(|g| g.len() == 16)
+        .map(|g| array(&g))
+        .ok_or(Error::Group)?;
     let wrap = URL_SAFE_NO_PAD
         .decode(wrap)
         .map_err(|_| EngineError::Unexpected)?;
@@ -499,7 +521,8 @@ pub async fn finish_lan_join<P: Pipe>(
     for entry in roster {
         held.hold_entry(entry).await?;
     }
-    held.hold_key(state.epoch, &me.did, &wrap).await?;
+    held.hold_key(state.epoch, &kc_name(&commitment), &me.did, &wrap)
+        .await?;
     add_roster_entries(pool, roster).await?;
     save_group(pool, &GroupRecord::on_lan(welcome.group, welcome.link)).await?;
     say_done(channel).await
@@ -582,7 +605,106 @@ where
     F: Future<Output = bool>,
 {
     let listening = offer.listening.take().ok_or(EngineError::LanUnreachable)?;
-    let (pipe, key) = listening.accept().await?;
-    let (channel, sas) = Channel::shower(pipe, &offer, &key)?;
+    let (pipe, key) = listening.accept(&offer.token).await?;
+    let (channel, sas) = Channel::shower(pipe, offer, &key).await?;
     new_side(channel, sas, device, meta, confirm).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sync2::entries::epoch_draft;
+    use crate::sync2::keys::{group_id, member_secrets};
+
+    /// The join is refused before anything travels.
+    struct Unused;
+
+    impl Pipe for Unused {
+        fn send(&mut self, _: Vec<u8>) -> impl Future<Output = Result<()>> + Send {
+            refused()
+        }
+
+        fn receive(&mut self) -> impl Future<Output = Result<Vec<u8>>> + Send {
+            refused()
+        }
+
+        fn close(&mut self) -> impl Future<Output = ()> + Send {
+            std::future::ready(())
+        }
+    }
+
+    fn refused<T>() -> std::future::Ready<Result<T>> {
+        std::future::ready(Err(EngineError::Unexpected))
+    }
+
+    /// A welcome may name another group than the roster it carries, or an id of any length.
+    #[tokio::test]
+    async fn a_welcome_must_name_the_rosters_group_as_16_bytes() {
+        let member = |n| member_secrets([n; 32], [n + 1; 32]);
+        let (device, recovery, me) = (member(1), member(3), member(5));
+        let subject = |m: &MemberSecrets, role| member_subject(&m.sig_public, &m.kem_public, role);
+        let group = group_id(
+            (&device.sig_public, &device.kem_public),
+            (&recovery.sig_public, &recovery.kem_public),
+        );
+        let draft = |op, add| Draft {
+            op,
+            signer: hex::encode(device.did),
+            add: Some(add),
+            remove: None,
+            cut: None,
+            epoch: None,
+            meta: None,
+        };
+        let mut genesis = draft(
+            Op::Genesis,
+            vec![
+                subject(&device, Role::Device),
+                subject(&recovery, Role::Recovery),
+            ],
+        );
+        genesis.epoch = Some(epoch_draft(
+            &[9; 32],
+            &group,
+            0,
+            &[device.did, recovery.did],
+        ));
+        let genesis = build_entry(&group, None, genesis, &[&device, &recovery]);
+        let state = apply_entry(None, &genesis).unwrap();
+        let mine = subject(&me, Role::Device);
+        let add = build_entry(
+            &group,
+            Some(&state),
+            draft(Op::Add, vec![mine.clone()]),
+            &[&device, &me],
+        );
+        let after = apply_entry(Some(&state), &add).unwrap();
+        let entries = vec![genesis, add];
+        let welcome = |group: &[u8]| Welcome {
+            group: hex::encode(group),
+            head: after.head.clone(),
+            seq: after.seq,
+            link: "link".into(),
+            store: WelcomeStore::Lan,
+            entries: Some(entries.clone()),
+            wrap: Some(String::new()),
+        };
+        let other = check_pinned(&entries, &welcome(&[0xab, 0xce]), &mine);
+        assert!(matches!(other, Err(EngineError::Protocol(Error::Group))));
+        let welcomed = Welcomed {
+            channel: Channel {
+                pipe: Unused,
+                token: [0; 16],
+                keys: (Vec::new(), Vec::new()),
+                sent: 0,
+                received: 0,
+            },
+            me: mine,
+            welcome: welcome(&[0xab, 0xcd]),
+            reach: None,
+        };
+        let pool = SqlitePool::connect_lazy("sqlite::memory:").unwrap();
+        let joined = finish_lan_join(&pool, &me, welcomed).await;
+        assert!(matches!(joined, Err(EngineError::Protocol(Error::Group))));
+    }
 }

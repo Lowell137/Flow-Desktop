@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use sqlx::SqlitePool;
 
 use super::batches::batch_content;
@@ -11,7 +11,7 @@ use super::blob::seal_blob;
 use super::engine::{Result, Session, now_ms};
 use super::envelope::ObjectType;
 use super::epoch::purpose_key;
-use super::gc::{Logged, manifests, record_manifest};
+use super::gc::{Logged, bounded_seq, manifests, record_manifest};
 use super::kdf::sha256;
 use super::paths::blob_path;
 use super::payload::encode_payload;
@@ -32,9 +32,19 @@ const BLOB_CONTENT_LIMIT: usize = 2 * 1024 * 1024;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Part {
+    #[serde(deserialize_with = "blob_name")]
     pub blob: String,
     pub collection: String,
     pub size: u64,
+}
+
+/// A blob's name is the hex of its SHA-256 (spec/store.md, Snapshot blobs). It becomes a store path.
+fn blob_name<'de, D: Deserializer<'de>>(deserializer: D) -> std::result::Result<String, D::Error> {
+    let name = String::deserialize(deserializer)?;
+    let valid = name.len() == 64 && name.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+    valid
+        .then_some(name)
+        .ok_or_else(|| serde::de::Error::custom("not a blob name"))
 }
 
 /// The last object of a log that a snapshot includes, so reading can go on from it.
@@ -42,6 +52,7 @@ pub struct Part {
 #[serde(deny_unknown_fields)]
 pub struct Tip {
     pub hash: String,
+    #[serde(deserialize_with = "bounded_seq")]
     pub seq: u64,
 }
 
@@ -151,6 +162,9 @@ impl<S: Store> Session<'_, S> {
         let Some(link) = self.reading().active.clone() else {
             return Ok(());
         };
+        if self.roster().recovery_due {
+            return Ok(());
+        }
         let collections = exported
             .iter()
             .map(|c| (c.collection.key(), c.ndjson.as_slice()))
@@ -160,6 +174,9 @@ impl<S: Store> Session<'_, S> {
 
     /// Writes the `profiles` collection as a snapshot of its own.
     pub async fn write_profiles_snapshot(&mut self, pool: &SqlitePool) -> Result<()> {
+        if self.roster().recovery_due {
+            return Ok(());
+        }
         let ndjson = profile_names::ndjson(pool).await?;
         self.write_snapshot_of(pool, None, vec![(PROFILES, ndjson.as_slice())])
             .await
@@ -171,6 +188,7 @@ impl<S: Store> Session<'_, S> {
         link: Option<String>,
         collections: Vec<(&str, &[u8])>,
     ) -> Result<()> {
+        self.may_seal()?;
         let group = *self.group();
         let epoch = self.roster().epoch;
         let did = self.device().did;
@@ -236,6 +254,37 @@ impl<S: Store> Session<'_, S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_manifest_naming_a_seq_above_2_53_is_refused() {
+        let manifest = |seq: u64| {
+            serde_json::from_str::<Manifest>(&format!(
+                r#"{{"head":"","link":null,"parts":[],"vv":{{"a":{{"hash":"","seq":{seq}}}}}}}"#
+            ))
+        };
+        assert!(manifest((1 << 53) - 1).is_ok());
+        assert!(manifest(1 << 53).is_err());
+    }
+
+    #[test]
+    fn a_manifest_names_blobs_only_by_their_hash() {
+        let manifest = |blob: &str| {
+            serde_json::from_str::<Manifest>(&format!(
+                r#"{{"head":"","link":null,"parts":[{{"blob":"{blob}","collection":"c","size":1}}],"vv":{{}}}}"#
+            ))
+        };
+        assert!(manifest(&"a1".repeat(32)).is_ok());
+        for blob in [
+            "",
+            "ab",
+            "../x",
+            &"A1".repeat(32),
+            &"g1".repeat(32),
+            &"a1".repeat(33),
+        ] {
+            assert!(manifest(blob).is_err(), "{blob}");
+        }
+    }
 
     #[test]
     fn records_are_split_below_the_blob_limit() {

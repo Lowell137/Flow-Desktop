@@ -1,5 +1,7 @@
 //! The object envelope shared by log objects and live messages (spec/store.md).
 
+use std::collections::BTreeMap;
+
 use subtle::ConstantTimeEq;
 
 use super::array;
@@ -16,12 +18,15 @@ const SIGNATURE_SIZE: usize = 64;
 pub const MIN_OBJECT_SIZE: usize = HEADER_SIZE + BOX_OVERHEAD + 256 + SIGNATURE_SIZE;
 pub const MAX_OBJECT_SIZE: usize = 4 * 1024 * 1024;
 pub const ZERO_HASH: [u8; 32] = [0; 32];
+/// The largest `seq` every implementation reads exactly.
+const MAX_SEQ: u64 = (1 << 53) - 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ObjectType {
     Changes = 0x01,
     Snapshot = 0x02,
     Ack = 0x03,
+    Login = 0x04,
     Live = 0x10,
 }
 
@@ -31,6 +36,7 @@ impl ObjectType {
             0x01 => Some(Self::Changes),
             0x02 => Some(Self::Snapshot),
             0x03 => Some(Self::Ack),
+            0x04 => Some(Self::Login),
             0x10 => Some(Self::Live),
             _ => None,
         }
@@ -41,6 +47,7 @@ impl ObjectType {
             Self::Changes => Purpose::Changes,
             Self::Snapshot => Purpose::Snapshot,
             Self::Ack => Purpose::Ack,
+            Self::Login => Purpose::Store,
             Self::Live => Purpose::Live,
         }
     }
@@ -140,6 +147,9 @@ pub fn parse_object<'a>(bytes: &'a [u8], group: &[u8]) -> Result<ParsedObject<'a
     if header.group[..] != *group {
         return Err(Error::Group);
     }
+    if header.seq > MAX_SEQ {
+        return Err(Error::Range);
+    }
     Ok(ParsedObject {
         header,
         header_bytes: &bytes[..HEADER_SIZE],
@@ -165,7 +175,7 @@ pub fn open_object(object: &ParsedObject<'_>, purpose_key: &[u8]) -> Result<Vec<
     open(purpose_key, object.header_bytes, object.sealed)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StreamPosition {
     pub seq: u64,
     pub hash: [u8; 32],
@@ -192,6 +202,38 @@ pub fn next_in_stream(
         seq: *seq,
         hash: object.hash,
     })
+}
+
+/// Walks a removed sender's log down from its cut to `stop_seq` (spec/store.md, A removed sender's
+/// chain), so nothing is applied from a chain that doesn't reach the hash the removal names. With
+/// `stop_hash`, the walk must arrive at it. Returns the hash each object must have when it is then
+/// read forward.
+pub async fn cut_chain<E, F, Fut>(
+    cut: (u64, [u8; 32]),
+    stop_seq: u64,
+    stop_hash: Option<&[u8; 32]>,
+    group: &[u8; 16],
+    mut read: F,
+) -> std::result::Result<BTreeMap<u64, [u8; 32]>, E>
+where
+    E: From<Error>,
+    F: FnMut(u64) -> Fut,
+    Fut: Future<Output = std::result::Result<Option<Vec<u8>>, E>>,
+{
+    let (top, mut wanted) = cut;
+    let mut hashes = BTreeMap::new();
+    for seq in (stop_seq + 1..=top).rev() {
+        let bytes = read(seq).await?.ok_or(Error::Gap)?;
+        if !bool::from(sha256(&bytes).ct_eq(&wanted)) {
+            return Err(Error::Prev.into());
+        }
+        hashes.insert(seq, wanted);
+        wanted = parse_object(&bytes, group)?.header.prev;
+    }
+    if top > stop_seq && stop_hash.is_some_and(|hash| !bool::from(wanted.ct_eq(hash))) {
+        return Err(Error::Prev.into());
+    }
+    Ok(hashes)
 }
 
 /// Live messages carry a counter instead of a chain.

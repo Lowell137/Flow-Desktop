@@ -119,7 +119,7 @@ function ChatRow({ message }: { message: LiveChatMessage }) {
       )}
       <p className="min-w-0 break-words text-sm leading-snug text-chrome-neutral-200">
         <span
-          className={`mr-1.5 inline-flex items-center gap-1 align-middle text-xs font-semibold ${authorNameClass(message)}`}
+          className={`me-1.5 inline-flex items-center gap-1 align-middle text-xs font-semibold ${authorNameClass(message)}`}
         >
           {message.author}
           <AuthorBadges message={message} />
@@ -222,7 +222,7 @@ function ChatPanel({
   return (
     <div
       className={`flex w-full flex-col overflow-hidden rounded-2xl border border-chrome-neutral-800 bg-surface-container-low ${
-        fill ? "h-full" : "h-[min(560px,70vh)]"
+        fill ? "h-full" : "h-[min(560px,70vh)] shrink-0"
       }`}
     >
       <div className="flex shrink-0 items-center gap-2 border-b border-chrome-neutral-800 px-4 py-3">
@@ -230,7 +230,7 @@ function ChatPanel({
         <h3 className="text-base font-medium text-chrome-neutral-200">
           {getString(isReplay ? "live_chat_replay_title" : "live_chat_title")}
         </h3>
-        <div className="ml-auto flex items-center gap-2">
+        <div className="ms-auto flex items-center gap-2">
           {canSwitchView && <ViewToggle view={view} onViewChange={onViewChange} />}
           {ended ? (
             <button
@@ -263,7 +263,7 @@ function ChatPanel({
       </div>
 
       <div className="relative min-h-0 flex-1">
-        <div ref={listRef} className="hide-scrollbar h-full select-text space-y-2.5 overflow-y-auto px-3 py-3">
+        <div ref={listRef} className="h-full select-text space-y-2.5 overflow-y-auto px-3 py-3">
           {loading && messages.length === 0 ? (
             <div className="flex items-center gap-2 px-1 py-2 text-sm text-chrome-neutral-500">
               <Loader2 size={16} className="animate-spin" />

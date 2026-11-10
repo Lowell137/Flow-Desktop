@@ -11,7 +11,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::str::FromStr;
 
+use serde::ser::SerializeMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde_json::Value;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -24,11 +26,12 @@ pub enum Collection {
     MusicBrain,
     Subscriptions,
     SubscribedChannels,
+    Notes,
 }
 
 impl Collection {
     /// Every collection, in a stable order (used to iterate capabilities/selection).
-    pub const ALL: [Collection; 8] = [
+    pub const ALL: [Collection; 9] = [
         Collection::WatchHistory,
         Collection::Playlists,
         Collection::Likes,
@@ -37,6 +40,7 @@ impl Collection {
         Collection::MusicBrain,
         Collection::Subscriptions,
         Collection::SubscribedChannels,
+        Collection::Notes,
     ];
 
     /// The stable wire key (matches the `snake_case` serde form), e.g. `"watch_history"`.
@@ -50,20 +54,40 @@ impl Collection {
             Collection::MusicBrain => "music_brain",
             Collection::Subscriptions => "subscriptions",
             Collection::SubscribedChannels => "subscribed_channels",
+            Collection::Notes => "notes",
         }
     }
 }
 
-/// Serialize a value to **canonical compact JSON**: object keys sorted ascending by
-/// Unicode codepoint, recursively, no insignificant whitespace. Works because this build has
-/// serde_json's `preserve_order` feature off, so `Value`'s object is a `BTreeMap` and re-serializing
-/// it emits sorted keys. Both platforms produce byte-identical output for the same value, which is
-/// what makes payload hashes cross-platform-stable. Returns `[]`-empty on the (unreachable for
-/// our records) serialize failure rather than panicking.
+/// Serialize a value to **canonical compact JSON** (RFC 8785 key order): object keys sorted
+/// ascending by UTF-16 code unit, recursively, no insignificant whitespace. Both platforms produce
+/// byte-identical output for the same value, which is what makes payload hashes
+/// cross-platform-stable. Returns `[]`-empty on the (unreachable for our records) serialize failure
+/// rather than panicking.
 pub fn to_canonical_json<T: Serialize>(value: &T) -> Vec<u8> {
     serde_json::to_value(value)
-        .and_then(|v| serde_json::to_vec(&v))
+        .and_then(|v| serde_json::to_vec(&Canonical(&v)))
         .unwrap_or_default()
+}
+
+struct Canonical<'a>(&'a Value);
+
+impl Serialize for Canonical<'_> {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self.0 {
+            Value::Object(object) => {
+                let mut entries: Vec<_> = object.iter().collect();
+                entries.sort_by(|(a, _), (b, _)| a.encode_utf16().cmp(b.encode_utf16()));
+                let mut map = s.serialize_map(Some(entries.len()))?;
+                for (key, value) in entries {
+                    map.serialize_entry(key, &Canonical(value))?;
+                }
+                map.end()
+            }
+            Value::Array(items) => s.collect_seq(items.iter().map(Canonical)),
+            other => other.serialize(s),
+        }
+    }
 }
 
 // ===========================================================================================
@@ -666,4 +690,33 @@ pub struct SubscribedChannel {
     pub hlc: Hlc,
     /// `true` = unsubscribed.
     pub deleted: bool,
+}
+
+// ===========================================================================================
+// Collection: notes
+// ===========================================================================================
+
+/// A note on a video or a channel (Android's `CanonicalNote`). Merged whole by `updated_at`, the
+/// edit time in ms: it has no `hlc`, and a deletion is a tombstone carrying its own time. The
+/// fields that may be absent stay `null` on the wire, as Android writes them, so both apps produce
+/// the same bytes for the same note.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Note {
+    /// `video:<id>` or `channel:<id>`; canonical sort order is `id` ascending.
+    pub id: String,
+    pub target_id: String,
+    /// `Video` or `Channel`; empty on a tombstone.
+    pub kind: String,
+    pub text: String,
+    pub updated_at: i64,
+    pub deleted: bool,
+    pub title: Option<String>,
+    pub channel_name: Option<String>,
+    pub channel_id: Option<String>,
+    pub thumbnail_url: Option<String>,
+    pub duration_seconds: Option<i32>,
+    pub channel_avatar_url: Option<String>,
+    pub channel_handle: Option<String>,
+    pub subscriber_count_text: Option<String>,
 }

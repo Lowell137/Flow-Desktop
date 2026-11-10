@@ -3,6 +3,7 @@ import { QRCodeSVG } from "qrcode.react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   ArrowDownToLine,
+  ArrowLeftRight,
   Camera,
   Check,
   Info,
@@ -19,7 +20,7 @@ import {
 import { CameraScanner } from "../components/sync/CameraScanner";
 import { LinkedDevicesSection } from "../components/sync/linked/LinkedDevicesSection";
 import { CopyConnectionData, NotConnectingHint } from "../components/sync/PairingHelp";
-import { IconChip, Spinner, VerificationCode } from "../components/sync/SyncParts";
+import { IconChip, SectionHeader, Spinner, VerificationCode } from "../components/sync/SyncParts";
 import { Button } from "../components/ui/Button";
 import { ToggleSwitch } from "../components/ui/ToggleSwitch";
 import { useSyncStore } from "../store/useSyncStore";
@@ -50,6 +51,7 @@ const COLLECTION_STRINGS: Record<string, { title: StringKey; desc: StringKey }> 
   music_brain: { title: "sync_collection_music_brain", desc: "sync_collection_music_brain_desc" },
   subscribed_channels: { title: "sync_collection_subscribed_channels", desc: "sync_collection_subscribed_channels_desc" },
   subscriptions: { title: "sync_collection_subscriptions", desc: "sync_collection_subscriptions_desc" },
+  notes: { title: "sync_collection_notes", desc: "sync_collection_notes_desc" },
 };
 
 function collectionTitle(key: string): string {
@@ -146,7 +148,7 @@ function SetupState() {
   const canConnect = !busy && paste.trim().length > 0;
 
   return (
-    <div className="mx-auto mt-10 max-w-5xl">
+    <div className="mt-6">
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
       {/* LEFT — Send */}
       <div className="flex flex-col rounded-2xl border border-chrome-neutral-800 bg-surface-container-low p-6">
@@ -171,7 +173,7 @@ function SetupState() {
               key={c.key}
               className="flex items-center justify-between p-4 transition-colors hover:bg-surface-container"
             >
-              <div className="min-w-0 pr-4">
+              <div className="min-w-0 pe-4">
                 <p className="font-medium text-chrome-neutral-100">{collectionTitle(c.key)}</p>
                 <p className="text-sm text-chrome-neutral-400">{collectionDesc(c.key)}</p>
               </div>
@@ -298,7 +300,7 @@ function PairingState() {
   const expired = remaining <= 0;
 
   return (
-    <div className="mx-auto mt-12 flex max-w-xl flex-col items-center justify-center text-center">
+    <div className="mx-auto mt-6 flex max-w-xl flex-col items-center justify-center text-center">
       <h2 className="text-2xl font-bold tracking-tight text-chrome-neutral-100">
         {hostInfo.receive ? getString("sync_pair_receive_title") : getString("sync_pair_scan_title")}
       </h2>
@@ -347,7 +349,7 @@ function ConsentScreen() {
   const manifests: ManifestInfo[] = status.manifests ?? [];
 
   return (
-    <div className="mx-auto mt-12 flex max-w-md flex-col items-center gap-6 rounded-2xl border border-chrome-neutral-800 bg-surface-container-low p-8">
+    <div className="mx-auto mt-6 flex max-w-md flex-col items-center gap-6 rounded-2xl border border-chrome-neutral-800 bg-surface-container-low p-8">
       <IconChip>
         <ShieldCheck className="h-5 w-5" />
       </IconChip>
@@ -404,7 +406,7 @@ function ConsentScreen() {
 
 function CenteredCard({ children }: { children: React.ReactNode }) {
   return (
-    <div className="mx-auto mt-12 flex max-w-md flex-col items-center gap-5 rounded-2xl border border-chrome-neutral-800 bg-surface-container-low p-8 text-center">
+    <div className="mx-auto mt-6 flex max-w-md flex-col items-center gap-5 rounded-2xl border border-chrome-neutral-800 bg-surface-container-low p-8 text-center">
       {children}
     </div>
   );
@@ -426,7 +428,7 @@ function SendingVerifyScreen() {
     return <ProgressScreen label={getString("sync_syncing")} />;
   }
   return (
-    <div className="mx-auto mt-12 flex max-w-xl flex-col items-center justify-center text-center">
+    <div className="mx-auto mt-6 flex max-w-xl flex-col items-center justify-center text-center">
       <h2 className="text-2xl font-bold tracking-tight text-chrome-neutral-100">
         {getString("sync_verify_title")}
       </h2>
@@ -452,7 +454,7 @@ const WITHHELD_STRINGS: Record<WithheldReason, StringKey> = {
 
 function WithheldNotes({ withheld }: { withheld: WithheldInfo[] }) {
   return (
-    <ul className="flex w-full flex-col gap-2 text-left">
+    <ul className="flex w-full flex-col gap-2 text-start">
       {withheld.map((item) => (
         <li
           key={item.collection}
@@ -475,7 +477,7 @@ function CompletedScreen() {
       </div>
       <h2 className="text-base font-medium text-chrome-neutral-100">{getString("sync_complete_title")}</h2>
       {status.direction === "received" && status.stats ? (
-        <div className="w-full text-left">
+        <div className="w-full text-start">
           <StatsTable stats={status.stats} />
         </div>
       ) : (
@@ -511,8 +513,8 @@ function MessageScreen({ icon, title, message }: { icon: React.ReactNode; title:
 // Page
 // --------------------------------------------------------------------------------------------
 
-/** Nearby sync (FLOW-SYNC/1) carries no profile and syncs Default only, so other profiles offer the
- * switch; Linked devices below sync any profile. */
+/** A one-time transfer (FLOW-SYNC/1) carries no profile and syncs Default only, so other profiles offer
+ * the switch; Linked devices above sync any profile. */
 function DefaultOnlyScreen({ defaultProfile }: { defaultProfile: Profile }) {
   const switchTo = useProfilesStore((state) => state.switchTo);
   const switching = useProfilesStore((state) => state.switchingTo !== null);
@@ -620,19 +622,25 @@ export default function Sync() {
         </div>
       </header>
 
-      {error && status.phase === "idle" && (
-        <div className="mx-auto mt-4 flex max-w-5xl items-center gap-2 rounded-xl border border-chrome-red-900/50 bg-chrome-red-950/30 px-4 py-3 text-sm text-chrome-red-400">
-          {error}
-        </div>
-      )}
+      <LinkedDevicesSection />
 
-      <AnimatePresence mode="wait">
-        <motion.div key={screenKey} {...SCREEN_MOTION}>
-          {body}
-        </motion.div>
-      </AnimatePresence>
-
-      {(screenKey === "setup" || screenKey === "defaultOnly") && <LinkedDevicesSection />}
+      <section className="mx-auto mt-12 max-w-5xl">
+        <SectionHeader
+          icon={<ArrowLeftRight className="h-5 w-5" />}
+          title={getString("sync_one_time_title")}
+          subtitle={getString("sync_one_time_subtitle")}
+        />
+        {error && status.phase === "idle" && (
+          <div className="flex items-center gap-2 rounded-xl border border-chrome-red-900/50 bg-chrome-red-950/30 px-4 py-3 text-sm text-chrome-red-400">
+            {error}
+          </div>
+        )}
+        <AnimatePresence mode="wait">
+          <motion.div key={screenKey} {...SCREEN_MOTION}>
+            {body}
+          </motion.div>
+        </AnimatePresence>
+      </section>
     </div>
   );
 }

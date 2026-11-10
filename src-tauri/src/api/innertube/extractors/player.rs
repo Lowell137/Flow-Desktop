@@ -1004,6 +1004,19 @@ fn extract_server_abr_url(streaming_data: &Value) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
+/// The uploader's tags, without repeats.
+fn keyword_tags(details: &Value) -> Vec<String> {
+    let mut tags: Vec<String> = Vec::new();
+    for keyword in details["keywords"].as_array().into_iter().flatten() {
+        if let Some(keyword) = keyword.as_str().map(str::trim).filter(|k| !k.is_empty())
+            && !tags.iter().any(|known| known == keyword)
+        {
+            tags.push(keyword.to_string());
+        }
+    }
+    tags
+}
+
 // Decode `playerConfig.mediaCommonConfig.mediaUstreamerRequestConfig
 // .videoPlaybackUstreamerConfig` (URL-safe base64) into raw protobuf bytes.
 fn extract_ustreamer_config(res: &Value) -> Vec<u8> {
@@ -1305,21 +1318,30 @@ fn has_live_manifest(response: &Value) -> bool {
     let streaming_data = &response["streamingData"];
     let has_manifest = streaming_data["hlsManifestUrl"].is_string()
         || streaming_data["dashManifestUrl"].is_string();
-    let details = &response["videoDetails"];
-    let says_live = details["isLive"].as_bool().unwrap_or(false)
-        || details["isPostLiveDvr"].as_bool().unwrap_or(false)
-        || response["playabilityStatus"]["liveStreamability"].is_object();
+    let says_live = is_live_response(response);
     let no_adaptive = streaming_data["adaptiveFormats"]
         .as_array()
         .is_none_or(Vec::is_empty);
     has_manifest && (says_live || no_adaptive)
 }
 
-/// A live broadcast or a just-ended one still served as live.
+/// A broadcast on air right now, whichever field this client reports that in.
+fn is_on_air(response: &Value) -> bool {
+    response["videoDetails"]["isLive"]
+        .as_bool()
+        .unwrap_or(false)
+        || response["microformat"]["playerMicroformatRenderer"]["liveBroadcastDetails"]["isLiveNow"]
+            .as_bool()
+            .unwrap_or(false)
+}
+
+/// A response to play as live: on air, or just ended and still served as live.
 fn is_live_response(response: &Value) -> bool {
-    let details = &response["videoDetails"];
-    details["isLive"].as_bool().unwrap_or(false)
-        || details["isPostLiveDvr"].as_bool().unwrap_or(false)
+    is_on_air(response)
+        || response["videoDetails"]["isPostLiveDvr"]
+            .as_bool()
+            .unwrap_or(false)
+        || response["playabilityStatus"]["liveStreamability"].is_object()
 }
 
 impl InnertubeClient {
@@ -1859,7 +1881,7 @@ impl InnertubeClient {
             chapters,
             auto_chapters,
             heatmap: watch_next::heatmap(next),
-            is_live: details["isLive"].as_bool().unwrap_or(false),
+            is_live: is_on_air(&res),
             category: res["microformat"]["playerMicroformatRenderer"]["category"]
                 .as_str()
                 .map(str::to_string),
@@ -1868,6 +1890,7 @@ impl InnertubeClient {
             channel_badge: owner.badge.map(ToOwned::to_owned),
             collaborators: owner.collaborators,
             hashtags: primary.hashtags,
+            tags: keyword_tags(details),
             badges: primary.badges,
             autoplay_video_id: watch_next::autoplay_video_id(next),
             has_chat_replay: watch_next::chat_seed(next).is_some_and(|(_, replay)| replay),
@@ -1961,6 +1984,9 @@ impl InnertubeClient {
             )));
         }
 
+        // The manifest may come from another client below, and googlevideo wants
+        // it fetched as that client. The direct streams stay the winner's.
+        let mut manifest_client = winning_client;
         let is_live = is_live_response(&res);
         let mut hls_manifest_url = streaming_data["hlsManifestUrl"]
             .as_str()
@@ -1986,10 +2012,12 @@ impl InnertubeClient {
             {
                 if let Some(hls) = live.response["streamingData"]["hlsManifestUrl"].as_str() {
                     hls_manifest_url = Some(hls.to_string());
+                    manifest_client = live.client;
                 }
                 if dash_manifest_url.is_none() {
                     if let Some(dash) = live.response["streamingData"]["dashManifestUrl"].as_str() {
                         dash_manifest_url = Some(dash.to_string());
+                        manifest_client = live.client;
                     }
                 }
             }
@@ -2050,7 +2078,7 @@ impl InnertubeClient {
             .unwrap_or(21600); // Default 6 hours
 
         // Return expiration time and user-agent string joined by | delimiter
-        let composite_expires_at = format!("{}|{}", expires_in_seconds, winning_client.user_agent);
+        let composite_expires_at = format!("{}|{}", expires_in_seconds, manifest_client.user_agent);
 
         // Offer every dubbed language alongside the original. VISIONOS serves these
         // as direct URLs googlevideo streams in full — the earlier iPadOS-sourced
@@ -2588,6 +2616,31 @@ mod ladder_decisions {
     }
 
     #[test]
+    fn a_just_ended_stream_plays_as_live_but_is_not_on_air() {
+        let dvr = json!({ "videoDetails": { "isPostLiveDvr": true } });
+        assert!(is_live_response(&dvr));
+        assert!(!is_on_air(&dvr));
+        let streamability = json!({ "playabilityStatus": { "liveStreamability": {} } });
+        assert!(is_live_response(&streamability));
+        assert!(!is_on_air(&streamability));
+    }
+
+    #[test]
+    fn either_field_means_on_air() {
+        assert!(is_on_air(&json!({ "videoDetails": { "isLive": true } })));
+        assert!(is_on_air(
+            &json!({ "microformat": { "playerMicroformatRenderer": {
+            "liveBroadcastDetails": { "isLiveNow": true }
+        } } })
+        ));
+        assert!(!is_on_air(
+            &json!({ "microformat": { "playerMicroformatRenderer": {
+            "liveBroadcastDetails": { "isLiveNow": false }
+        } } })
+        ));
+    }
+
+    #[test]
     fn a_manifest_beside_adaptive_formats_needs_a_live_signal() {
         let vod = json!({ "streamingData": {
             "hlsManifestUrl": "https://manifest",
@@ -2819,5 +2872,17 @@ mod remote_signing {
             signed_format(&format).expect("cipher parses").parameter,
             "signature"
         );
+    }
+}
+
+#[cfg(test)]
+mod keyword_tag_tests {
+    use super::*;
+
+    #[test]
+    fn keyword_tags_keep_the_uploaders_order_without_repeats_or_blanks() {
+        let details = serde_json::json!({ "keywords": ["b", "a", "b", "  ", " c "] });
+        assert_eq!(keyword_tags(&details), ["b", "a", "c"]);
+        assert!(keyword_tags(&Value::Null).is_empty());
     }
 }

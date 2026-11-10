@@ -10,6 +10,8 @@ pub enum Error {
     Suite,
     #[error("object belongs to another group")]
     Group,
+    #[error("number out of range")]
+    Range,
     #[error("sender is not a member")]
     Sender,
     #[error("signature does not verify")]
@@ -34,6 +36,8 @@ pub enum Error {
     X25519,
     #[error("malformed roster entry")]
     RosterFormat,
+    #[error("the group id isn't the one the genesis keys commit to")]
+    RosterGroup,
     #[error("roster entry does not follow the head")]
     RosterChain,
     #[error("roster entry breaks the rules for its operation")]
@@ -57,6 +61,7 @@ impl Error {
             Self::Magic => "magic",
             Self::Suite => "suite",
             Self::Group => "group",
+            Self::Range => "range",
             Self::Sender => "sender",
             Self::Signature => "signature",
             Self::Replay => "replay",
@@ -69,6 +74,7 @@ impl Error {
             Self::KeyCommitment => "key-commitment",
             Self::X25519 => "x25519",
             Self::RosterFormat => "roster-format",
+            Self::RosterGroup => "roster-group",
             Self::RosterChain => "roster-chain",
             Self::RosterOp => "roster-op",
             Self::RosterSigner => "roster-signer",

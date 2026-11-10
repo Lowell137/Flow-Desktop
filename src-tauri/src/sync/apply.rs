@@ -26,14 +26,17 @@ use crate::sync::brain_rekey;
 use crate::sync::brainmap;
 use crate::sync::canonical::{
     Collection, FlowNeuroBrainSnapshot, GroupMember, Hlc, Like, LikeState, MusicBrainSnapshot,
-    Playlist, PlaylistItem, SettingEntry, SubscribedChannel, SubscriptionGroup, WatchHistoryRecord,
+    Note, Playlist, PlaylistItem, SettingEntry, SubscribedChannel, SubscriptionGroup,
+    WatchHistoryRecord,
 };
 use crate::sync::changes::{self, Change};
 use crate::sync::clock;
 use crate::sync::error::SyncError;
 use crate::sync::mapping::{self, WatchInsert, WatchRow};
 use crate::sync::merge::{self, MergedFlowNeuroBrain, MergedMusicBrain};
+use crate::sync::notes;
 use crate::sync::protocol::StagedCollection;
+use crate::sync::saved_shorts;
 use crate::sync::settings_map;
 use crate::sync::tombstones;
 
@@ -62,6 +65,10 @@ const WATCH_SELECT: &str = "SELECT video_id, title, channel_name, channel_id, wa
      watch_duration_seconds, total_duration_seconds, is_music, is_short, updated_hlc \
      FROM watch_history";
 
+/// Starts the peer id a backup restore applies under: a file on this device says nothing about
+/// what any other device keeps.
+pub const BACKUP_RESTORE_PEER_PREFIX: &str = "backup-restore-";
+
 /// Apply a payload received in a FLOW-SYNC/1 session atomically. See the module docs for the
 /// guarantees.
 pub async fn apply_payload(
@@ -84,6 +91,12 @@ pub async fn apply_stream_payload(
     apply(pool, our_device_id, peer_device_id, staged, false).await
 }
 
+/// Takes the write lock at once. A deferred transaction that reads before it writes fails with
+/// `SQLITE_BUSY` when another connection commits in between, instead of waiting for the lock.
+async fn begin_merge(pool: &SqlitePool) -> Result<Transaction<'static, Sqlite>, sqlx::Error> {
+    pool.begin_with("BEGIN IMMEDIATE").await
+}
+
 async fn apply(
     pool: &SqlitePool,
     our_device_id: &str,
@@ -93,7 +106,7 @@ async fn apply(
 ) -> Result<ApplyReport, SyncError> {
     let backup = backup_snapshot(pool, staged).await?;
 
-    let mut tx = pool.begin().await?;
+    let mut tx = begin_merge(pool).await?;
     let mut stats = Vec::with_capacity(staged.len());
 
     for sc in staged {
@@ -130,7 +143,7 @@ async fn apply(
             ),
             Collection::Likes => (apply_likes(&mut tx, our_device_id, &sc.ndjson).await?, true),
             Collection::Playlists => (
-                apply_playlists(&mut tx, our_device_id, &sc.ndjson).await?,
+                apply_playlists(&mut tx, our_device_id, peer_device_id, &sc.ndjson).await?,
                 true,
             ),
             Collection::Settings => (
@@ -150,6 +163,10 @@ async fn apply(
             ),
             Collection::SubscribedChannels => (
                 apply_subscribed_channels(&mut tx, our_device_id, &sc.ndjson).await?,
+                true,
+            ),
+            Collection::Notes => (
+                notes::apply_notes(&mut tx, parse_ndjson(&sc.ndjson)?).await?,
                 true,
             ),
 
@@ -391,6 +408,7 @@ async fn apply_likes(
     };
     let live: BTreeSet<String> = local.iter().map(mapping::like_key).collect();
     let stamps = changes::load(tx, changes::LIKES, now_ms()).await?;
+    tombstones::raise_live_likes(&mut local, &stamps, device_id);
     local.extend(tombstones::likes(&stamps, &live, device_id));
     let incoming = parse_ndjson::<Like>(ndjson)?;
     let local_map: BTreeMap<String, Like> = local
@@ -434,6 +452,7 @@ async fn apply_likes(
 async fn apply_playlists(
     tx: &mut Transaction<'_, Sqlite>,
     device_id: &str,
+    peer_device_id: &str,
     ndjson: &[u8],
 ) -> Result<ApplyStats, SyncError> {
     let mut local = match get_setting(tx, mapping::PLAYLISTS_SETTING_KEY).await? {
@@ -443,7 +462,18 @@ async fn apply_playlists(
     if let Some(raw) = get_setting(tx, mapping::ALBUMS_SETTING_KEY).await? {
         local.extend(mapping::parse_albums_blob(&raw, device_id));
     }
+    let library = get_setting(tx, saved_shorts::SAVED_SHORTS_SETTING_KEY).await?;
+    if let Some(raw) = &library {
+        local.push(saved_shorts::parse_library(raw, device_id));
+    }
     let incoming = parse_ndjson::<Playlist>(ndjson)?;
+    if !peer_device_id.starts_with(BACKUP_RESTORE_PEER_PREFIX)
+        && incoming
+            .iter()
+            .any(|p| p.sync_id == saved_shorts::SAVED_SHORTS_SYNC_ID)
+    {
+        set_setting(tx, saved_shorts::PEER_KEEPS_LIST_SETTING_KEY, "true").await?;
+    }
     for (from, to) in merge::adopt_peer_playlist_ids(&mut local, &incoming) {
         changes::rename_playlist(tx, &from, &to).await?;
     }
@@ -477,6 +507,17 @@ async fn apply_playlists(
         }
     }
 
+    let (shorts, merged): (Vec<Playlist>, Vec<Playlist>) = merged
+        .into_iter()
+        .partition(|p| p.sync_id == saved_shorts::SAVED_SHORTS_SYNC_ID);
+    if let Some(playlist) = shorts.first() {
+        set_setting(
+            tx,
+            saved_shorts::SAVED_SHORTS_SETTING_KEY,
+            &saved_shorts::library_blob(playlist, library.as_deref()),
+        )
+        .await?;
+    }
     let (albums, playlists): (Vec<Playlist>, Vec<Playlist>) =
         merged.into_iter().partition(mapping::is_album_playlist);
 
@@ -910,6 +951,11 @@ async fn backup_snapshot(
                 obj.insert("user_playlists".to_string(), serde_json::json!(raw));
                 let albums = setting_value(pool, mapping::ALBUMS_SETTING_KEY).await?;
                 obj.insert("saved_albums".to_string(), serde_json::json!(albums));
+                let shorts = setting_value(pool, saved_shorts::SAVED_SHORTS_SETTING_KEY).await?;
+                obj.insert(
+                    saved_shorts::SAVED_SHORTS_SETTING_KEY.to_string(),
+                    serde_json::json!(shorts),
+                );
             }
             Collection::Settings => {
                 let mut map = serde_json::Map::new();
@@ -942,6 +988,10 @@ async fn backup_snapshot(
                     serde_json::json!(tombs),
                 );
             }
+            Collection::Notes => {
+                let notes = crate::db::notes::all(pool).await?;
+                obj.insert("notes".to_string(), serde_json::to_value(notes)?);
+            }
             #[allow(unreachable_patterns)]
             _ => {}
         }
@@ -958,6 +1008,24 @@ async fn setting_value(pool: &SqlitePool, key: &str) -> Result<Option<String>, S
     )
 }
 
+/// Whether this collection's merge can read `line`. One it can't fails the whole payload there.
+pub fn readable_record(collection: Collection, line: &[u8]) -> bool {
+    fn reads<T: serde::de::DeserializeOwned>(line: &[u8]) -> bool {
+        serde_json::from_slice::<T>(line).is_ok()
+    }
+    match collection {
+        Collection::WatchHistory => reads::<WatchHistoryRecord>(line),
+        Collection::Likes => reads::<Like>(line),
+        Collection::Playlists => reads::<Playlist>(line),
+        Collection::Settings => reads::<SettingEntry>(line),
+        Collection::FlowNeuroBrain => reads::<FlowNeuroBrainSnapshot>(line),
+        Collection::MusicBrain => reads::<MusicBrainSnapshot>(line),
+        Collection::Subscriptions => reads::<SubscriptionGroup>(line),
+        Collection::SubscribedChannels => reads::<SubscribedChannel>(line),
+        Collection::Notes => reads::<Note>(line),
+    }
+}
+
 fn parse_ndjson<T: serde::de::DeserializeOwned>(ndjson: &[u8]) -> Result<Vec<T>, SyncError> {
     ndjson
         .split(|&b| b == b'\n')
@@ -972,4 +1040,52 @@ fn now_iso() -> String {
 
 fn now_ms() -> u64 {
     chrono::Utc::now().timestamp_millis().max(0) as u64
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+    use std::time::Duration;
+
+    use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
+
+    use super::*;
+
+    async fn wal_pool(path: &std::path::Path, busy: Duration) -> SqlitePool {
+        let options = SqliteConnectOptions::from_str(&format!("sqlite://{}", path.display()))
+            .unwrap()
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .busy_timeout(busy);
+        SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .unwrap()
+    }
+
+    /// The app writes to the same database while a merge reads, so the merge holds the write lock
+    /// from its first statement: another writer waits for it instead of making it fail.
+    #[tokio::test]
+    async fn a_merge_holds_the_write_lock_from_its_start() {
+        let path = std::env::temp_dir().join(format!("merge-lock-{}.sqlite", std::process::id()));
+        let merge = wal_pool(&path, Duration::from_secs(5)).await;
+        sqlx::query("CREATE TABLE t (v INTEGER)")
+            .execute(&merge)
+            .await
+            .unwrap();
+        let other = wal_pool(&path, Duration::ZERO).await;
+
+        let tx = begin_merge(&merge).await.unwrap();
+        let write = sqlx::query("INSERT INTO t VALUES (1)")
+            .execute(&other)
+            .await;
+        assert!(write.is_err(), "another writer must wait for the merge");
+        tx.commit().await.unwrap();
+        sqlx::query("INSERT INTO t VALUES (1)")
+            .execute(&other)
+            .await
+            .unwrap();
+        let _ = std::fs::remove_file(&path);
+    }
 }

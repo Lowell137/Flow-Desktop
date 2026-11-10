@@ -34,6 +34,12 @@ const { engine, resolveMusicStream, getMusicWatchQueue } = vi.hoisted(() => ({
     getErrorCode: vi.fn((): number | null => null),
     wantsAac: vi.fn(() => false),
     getCurrentTime: vi.fn(() => 0),
+    getSpeed: vi.fn(() => 1),
+    armCrossfade: vi.fn(),
+    holdForSkip: vi.fn(),
+    replay: vi.fn(),
+    setVolume: vi.fn(),
+    setMuted: vi.fn(),
   },
   resolveMusicStream: vi.fn(),
   getMusicWatchQueue: vi.fn(),
@@ -57,7 +63,10 @@ vi.mock("../lib/api/music", () => ({
   rankMusicCandidates: (items: SongItem[]) => Promise.resolve(items),
 }));
 
+import { useAppSettingsStore } from "./useAppSettingsStore";
 import { useMusicPlayerStore } from "./useMusicPlayerStore";
+import { preloadTrack } from "../lib/musicPreload";
+import { SETTINGS } from "../lib/settings/schema";
 
 const stream = (id: string) =>
   ({ videoId: id, audioUrl: `http://127.0.0.1/stream/${id}`, loudnessDb: -2 }) as MusicStreamInfo;
@@ -114,6 +123,72 @@ describe("starting a track", () => {
     expect(resolveMusicStream).toHaveBeenCalledTimes(2);
     expect(engine.play).toHaveBeenCalledTimes(1);
     expect(useMusicPlayerStore.getState().streamError).toBeNull();
+  });
+});
+
+describe("Fade when you skip", () => {
+  afterEach(() => {
+    useAppSettingsStore.setState({ values: {} });
+    engine.getCurrentTime.mockReturnValue(0);
+  });
+
+  const skipAt = async (seconds: number, values: Record<string, string>) => {
+    useAppSettingsStore.setState({ values });
+    await useMusicPlayerStore.getState().playQueue([song("a"), song("b")], 0);
+    engine.holdForSkip.mockClear();
+    engine.armCrossfade.mockClear();
+    engine.getCurrentTime.mockReturnValue(seconds);
+    useMusicPlayerStore.getState().next();
+    await vi.waitFor(() => expect(engine.load).toHaveBeenCalled());
+    return engine.holdForSkip.mock.calls.map(([length]) => length);
+  };
+
+  it("keeps the song playing while the next one loads, and fades over the chosen length", async () => {
+    const on = { [SETTINGS.MUSIC_CROSSFADE_ENABLED]: "true", [SETTINGS.MUSIC_CROSSFADE_SECONDS]: "6" };
+    expect(await skipAt(30, on)).toEqual([6]);
+    expect(engine.armCrossfade).toHaveBeenCalledWith(6);
+  });
+
+  it("blends for a moment when skips don't fade, and cuts a song barely heard", async () => {
+    expect(await skipAt(30, {})).toEqual([0.25]);
+    expect(await skipAt(30, { [SETTINGS.MUSIC_CROSSFADE_ENABLED]: "true", [SETTINGS.MUSIC_CROSSFADE_ON_SKIP]: "false" })).toEqual([0.25]);
+    expect(await skipAt(0.5, {})).toEqual([]);
+  });
+
+  it("no longer buffers the next song as soon as one starts", async () => {
+    useAppSettingsStore.setState({ values: { [SETTINGS.MUSIC_CROSSFADE_ENABLED]: "true" } });
+    vi.mocked(preloadTrack).mockClear();
+    await useMusicPlayerStore.getState().playQueue([song("a"), song("b")], 0);
+    expect(preloadTrack).not.toHaveBeenCalled();
+  });
+});
+
+describe("Open the full player for new songs", () => {
+  afterEach(() => {
+    useAppSettingsStore.setState({ values: {} });
+    useMusicPlayerStore.setState({ viewState: "dock" });
+  });
+
+  const opensWith = async (play: () => Promise<void>) => {
+    useMusicPlayerStore.setState({ viewState: "dock" });
+    await play();
+    return useMusicPlayerStore.getState().viewState;
+  };
+
+  it("opens for a picked song, a queue and a radio", async () => {
+    useAppSettingsStore.setState({ values: { [SETTINGS.MUSIC_OPEN_PLAYER_ON_PLAY]: "true" } });
+    const { playTrack, playQueue, startRadio } = useMusicPlayerStore.getState();
+    expect(await opensWith(() => playTrack(song("a")))).toBe("full");
+    expect(await opensWith(() => playQueue([song("a")], 0))).toBe("full");
+    expect(await opensWith(() => startRadio(song("a")))).toBe("full");
+  });
+
+  it("stays in the dock with the setting off, and for a restored queue", async () => {
+    const { playTrack, playQueue, startRadio } = useMusicPlayerStore.getState();
+    expect(await opensWith(() => playTrack(song("a")))).toBe("dock");
+    expect(await opensWith(() => startRadio(song("a")))).toBe("dock");
+    useAppSettingsStore.setState({ values: { [SETTINGS.MUSIC_OPEN_PLAYER_ON_PLAY]: "true" } });
+    expect(await opensWith(() => playQueue([song("a")], 0, null, { at: 1, autoplay: false }))).toBe("dock");
   });
 });
 
@@ -304,5 +379,29 @@ describe("a queue restored at launch", () => {
     await useMusicPlayerStore.getState().playTrack(song("chosen"));
     useMusicPlayerStore.getState().restoreSavedQueue(saved(["old"], 0, 0));
     expect(useMusicPlayerStore.getState().currentTrack?.id).toBe("chosen");
+  });
+});
+
+describe("setVolume while muted", () => {
+  it("unmutes the engine along with the store when the volume is raised", async () => {
+    const { useMusicPlayerStore } = await import("./useMusicPlayerStore");
+    useMusicPlayerStore.setState({ isMuted: true, volume: 0.5 });
+    engine.setMuted.mockClear();
+
+    useMusicPlayerStore.getState().setVolume(0.6);
+
+    expect(engine.setMuted).toHaveBeenCalledWith(false);
+    expect(useMusicPlayerStore.getState().isMuted).toBe(false);
+  });
+
+  it("stays muted at zero", async () => {
+    const { useMusicPlayerStore } = await import("./useMusicPlayerStore");
+    useMusicPlayerStore.setState({ isMuted: true, volume: 0.5 });
+    engine.setMuted.mockClear();
+
+    useMusicPlayerStore.getState().setVolume(0);
+
+    expect(engine.setMuted).not.toHaveBeenCalled();
+    expect(useMusicPlayerStore.getState().isMuted).toBe(true);
   });
 });

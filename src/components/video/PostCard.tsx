@@ -65,7 +65,7 @@ export function PostCard({ post }: PostCardProps) {
           </div>
         </div>
 
-        <div className="pl-0 sm:pl-[52px]">
+        <div className="ps-0 sm:ps-[52px]">
           {post.textContent && (
             <LinkedText
               text={post.textContent}
@@ -109,7 +109,7 @@ export function PostCard({ post }: PostCardProps) {
         animate={{ width: commentsOpen ? SIDE_PANEL_WIDTH : 0, opacity: commentsOpen ? 1 : 0 }}
         transition={{ type: "spring", bounce: 0, duration: 0.4 }}
         className={`min-h-0 overflow-hidden bg-surface-container-high ${
-          commentsOpen ? "ml-4 rounded-2xl border border-chrome-neutral-800" : ""
+          commentsOpen ? "ms-4 rounded-2xl border border-chrome-neutral-800" : ""
         }`}
       >
         {commentsOpen && (
@@ -128,7 +128,7 @@ export function PostCard({ post }: PostCardProps) {
                 <X className="h-5 w-5" />
               </button>
             </div>
-            <div className="hide-scrollbar min-h-0 flex-1 overflow-y-auto px-4">
+            <div className="min-h-0 flex-1 overflow-y-auto px-4">
               <CommentsSection
                 videoId=""
                 hideHeader
